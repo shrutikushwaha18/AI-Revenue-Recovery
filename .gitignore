@@ -1,0 +1,22 @@
+# Secrets
+.env
+backend/.env
+
+# Virtual environments
+.venv/
+venv/
+backend/venv/
+
+# Database
+*.db
+recoverai.db
+backend/recoverai.db
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Misc
+.DS_Store
+Thumbs.db

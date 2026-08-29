@@ -27,12 +27,23 @@ def init_db():
             recovery_action TEXT,
             retry_count INTEGER DEFAULT 0,
             payment_link TEXT,
+            payment_link_id TEXT,
+            razorpay_reference_id TEXT,
             recovered_amount REAL DEFAULT 0,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
         """
     )
+
+    transaction_columns = {
+        row[1] for row in conn.execute("PRAGMA table_info(transactions)").fetchall()
+    }
+
+    if "payment_link_id" not in transaction_columns:
+        conn.execute("ALTER TABLE transactions ADD COLUMN payment_link_id TEXT")
+    if "razorpay_reference_id" not in transaction_columns:
+        conn.execute("ALTER TABLE transactions ADD COLUMN razorpay_reference_id TEXT")
 
     conn.execute(
         """

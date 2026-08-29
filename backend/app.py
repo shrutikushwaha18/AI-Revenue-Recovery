@@ -7,7 +7,7 @@ from flask import Flask, jsonify, request
 from flask_cors import CORS
 
 from database import get_db, init_db
-from razorpay_service import create_payment_link
+from razorpay_service import create_payment_link, generate_reference_id
 from recovery_agent import decide_recovery_action
 from seed import seed_db
 
@@ -83,17 +83,35 @@ def recover_transaction(transaction_id):
         conn.close()
         return jsonify({"decision": decision, "executed": False})
 
+    existing_payment_link = transaction.get("payment_link")
+    if transaction.get("recovery_status") == "recovery_started" and existing_payment_link:
+        conn.close()
+        return jsonify(
+            {
+                "success": True,
+                "transaction_id": transaction_id,
+                "payment_link": existing_payment_link,
+                "reused_existing_payment_link": True,
+                "decision": decision,
+            }
+        )
+
     try:
-        response = create_payment_link(transaction)
+        reference_id = generate_reference_id(transaction_id)
+        response = create_payment_link(transaction, reference_id=reference_id)
         short_url = response.get("short_url") or response.get("url") or "not_available"
+        payment_link_id = response.get("id") or None
 
         conn.execute(
             """
             UPDATE transactions
-            SET payment_link = ?, recovery_status = ?
+            SET payment_link = ?,
+                payment_link_id = ?,
+                razorpay_reference_id = ?,
+                recovery_status = ?
             WHERE transaction_id = ?
             """,
-            (short_url, "recovery_started", transaction_id),
+            (short_url, payment_link_id, reference_id, "recovery_started", transaction_id),
         )
 
         conn.execute(
@@ -116,12 +134,21 @@ def recover_transaction(transaction_id):
                 "success": True,
                 "transaction_id": transaction_id,
                 "payment_link": short_url,
+                "payment_link_id": payment_link_id,
+                "razorpay_reference_id": reference_id,
                 "decision": decision,
             }
         )
 
     except Exception as exc:
         conn.close()
+        message = str(exc).lower()
+        if "reference_id" in message and "already exists" in message:
+            return jsonify({
+                "success": False,
+                "error": "Duplicate Razorpay reference_id. Please retry with a new attempt.",
+                "decision": decision,
+            }), 409
         return jsonify({
             "success": False,
             "error": str(exc),
@@ -160,7 +187,7 @@ def razorpay_webhook():
     if event == "payment_link.paid":
         payment_link = data.get("payload", {}).get("payment_link", {}).get("entity", {})
         reference_id = payment_link.get("reference_id", "")
-        transaction_id = reference_id.replace("REC_", "")
+        transaction_id = reference_id.replace("REC_", "", 1).split("_", 1)[0]
 
         conn = get_db()
         row = conn.execute(

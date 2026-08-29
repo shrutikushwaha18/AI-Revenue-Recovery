@@ -1,4 +1,5 @@
 import os
+import uuid
 
 import razorpay
 from dotenv import load_dotenv
@@ -13,13 +14,20 @@ if RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET:
     client = razorpay.Client(auth=(RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET))
 
 
-def create_payment_link(transaction):
+def generate_reference_id(transaction_id):
+    return f"REC_{transaction_id}_{uuid.uuid4().hex[:8]}"
+
+
+def create_payment_link(transaction, reference_id=None):
     if client is None:
         raise RuntimeError(
             "Razorpay credentials missing. Set RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET in backend/.env"
         )
 
     amount_in_paise = int(float(transaction["amount"]) * 100)
+
+    if reference_id is None:
+        reference_id = generate_reference_id(transaction["transaction_id"])
 
     data = {
         "amount": amount_in_paise,
@@ -33,7 +41,7 @@ def create_payment_link(transaction):
         },
         "notify": {"sms": False, "email": False},
         "reminder_enable": False,
-        "reference_id": f"REC_{transaction['transaction_id']}",
+        "reference_id": reference_id,
     }
 
     return client.payment_link.create(data)

@@ -45,6 +45,7 @@ TRANSACTIONS = [
 
 
 def seed_db():
+    init_db()
     conn = get_db()
 
     for transaction in TRANSACTIONS:

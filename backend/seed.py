@@ -1,8 +1,6 @@
 from database import get_db, init_db
 
-init_db()
-
-transactions = [
+TRANSACTIONS = [
     (
         "TXN001",
         "Aditi Sharma",
@@ -45,10 +43,11 @@ transactions = [
     ),
 ]
 
-conn = get_db()
 
-for transaction in transactions:
-    try:
+def seed_db():
+    conn = get_db()
+
+    for transaction in TRANSACTIONS:
         conn.execute(
             """
             INSERT OR IGNORE INTO transactions (
@@ -64,10 +63,11 @@ for transaction in transactions:
             """,
             transaction,
         )
-    except Exception:
-        pass
 
-conn.commit()
-conn.close()
+    conn.commit()
+    conn.close()
+    print("Synthetic transactions seeded if missing.")
 
-print("Synthetic transactions inserted.")
+
+if __name__ == "__main__":
+    seed_db()

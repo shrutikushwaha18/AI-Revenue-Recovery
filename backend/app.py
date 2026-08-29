@@ -9,6 +9,7 @@ from flask_cors import CORS
 from database import get_db, init_db
 from razorpay_service import create_payment_link
 from recovery_agent import decide_recovery_action
+from seed import seed_db
 
 load_dotenv()
 
@@ -16,6 +17,7 @@ app = Flask(__name__)
 CORS(app)
 
 init_db()
+seed_db()
 
 
 @app.route("/")
@@ -138,7 +140,7 @@ def audit(transaction_id):
     return jsonify([dict(row) for row in rows])
 
 
-@app.route("/api/webhook", methods=["POST"])
+@app.route("/api/webhook/razorpay", methods=["POST"])
 def razorpay_webhook():
     webhook_secret = os.getenv("RAZORPAY_WEBHOOK_SECRET", "")
     signature = request.headers.get("X-Razorpay-Signature")

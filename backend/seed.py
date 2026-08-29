@@ -41,6 +41,16 @@ TRANSACTIONS = [
         "timeout",
         "pending",
     ),
+    (
+        "TXN005",
+        "Neha Sharma",
+        "neha@example.com",
+        "9876543214",
+        3499,
+        "failed",
+        "bank_decline",
+        "pending",
+    ),
 ]
 
 

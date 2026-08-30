@@ -4,12 +4,12 @@
   --panel-bg: rgba(15, 23, 42, 0.8);
   --subtle-border: rgba(148, 163, 184, 0.14);
   --soft-shadow: 0 12px 28px rgba(2, 6, 23, 0.28);
+  --radius-lg: 22px;
+  --radius-md: 18px;
 }
 
-.page-shell {
-  width: min(1360px, calc(100% - 32px));
-  margin: 0 auto;
-  padding: 28px 0 36px;
+html {
+  font-size: 16px;
 }
 
 body {
@@ -17,6 +17,13 @@ body {
     radial-gradient(circle at var(--spotlight-x) var(--spotlight-y), rgba(94, 234, 212, 0.12), transparent 18%),
     linear-gradient(180deg, #07111d 0%, #0a1728 100%);
   color: #eaf3ff;
+  font-size: 1rem;
+}
+
+.page-shell {
+  width: min(1450px, calc(100% - 38px));
+  margin: 0 auto;
+  padding: 18px 0 36px;
 }
 
 button, input, select {
@@ -32,17 +39,20 @@ button:hover {
 }
 
 .topbar {
+  position: sticky;
+  top: 14px;
+  z-index: 30;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 18px;
-  padding: 18px 22px;
+  padding: 12px 18px;
   border: 1px solid rgba(148, 163, 184, 0.18);
-  border-radius: 24px;
-  background: rgba(9, 16, 28, 0.72);
+  border-radius: 18px;
+  background: rgba(9, 16, 28, 0.78);
   -webkit-backdrop-filter: blur(12px);
   backdrop-filter: blur(12px);
-  box-shadow: 0 18px 36px rgba(2, 6, 23, 0.28);
+  box-shadow: 0 12px 24px rgba(2, 6, 23, 0.24);
 }
 
 .brand-wrap {
@@ -71,13 +81,13 @@ button:hover {
 
 .topbar h1 {
   margin: 0;
-  font-size: clamp(2.1rem, 3vw, 3.2rem);
+  font-size: clamp(1.4rem, 2vw, 1.9rem);
   line-height: 1;
-  letter-spacing: -0.06em;
+  letter-spacing: -0.05em;
 }
 
 .subtitle {
-  margin: 6px 0 0;
+  margin: 0;
   color: #a9bfd4;
 }
 
@@ -196,7 +206,7 @@ button:hover {
 }
 
 .dashboard {
-  padding-top: 22px;
+  padding-top: 18px;
   display: flex;
   flex-direction: column;
   gap: 22px;
@@ -207,7 +217,7 @@ button:hover {
   grid-template-columns: 1.2fr 0.8fr;
   gap: 18px;
   align-items: center;
-  padding: 28px 24px;
+  padding: 26px 24px;
   position: relative;
   overflow: hidden;
 }
@@ -234,17 +244,16 @@ button:hover {
   letter-spacing: -0.05em;
 }
 
-.hero-copy h2 {
-  margin-top: 8px;
-  font-size: clamp(1.2rem, 2vw, 1.8rem);
-  color: #dfeaf7;
+.hero-copy h1 {
+  font-size: clamp(2.2rem, 3vw, 3.3rem);
+  line-height: 1.05;
 }
 
 .hero-copy p {
   margin-top: 12px;
   max-width: 650px;
   color: #b8ccdd;
-  font-size: 1.02rem;
+  font-size: 1.08rem;
 }
 
 .hero-actions {
@@ -350,7 +359,7 @@ button:hover {
   background: rgba(15, 23, 42, 0.8);
   border: 1px solid rgba(148, 163, 184, 0.15);
   border-radius: 22px;
-  padding: 22px;
+  padding: 24px;
   box-shadow: 0 10px 30px rgba(2, 6, 23, 0.2);
   transition: transform 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
 }
@@ -381,28 +390,33 @@ button:hover {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  padding: 18px 18px 16px;
-  border-radius: 18px;
+  padding: 20px 20px 18px;
+  border-radius: 22px;
   background: rgba(8, 15, 26, 0.78);
   border: 1px solid rgba(148, 163, 184, 0.1);
   transition: transform 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
 }
 
 .impact-metric label {
-  font-size: 0.75rem;
+  font-size: 0.74rem;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: #9bb0c7;
 }
 
 .impact-metric strong {
-  font-size: clamp(1.7rem, 2vw, 2.4rem);
+  font-size: clamp(2.2rem, 2.8vw, 3.2rem);
   letter-spacing: -0.06em;
   color: #f0f7ff;
+  line-height: 1;
 }
 
 .impact-metric.success strong { color: #9ae6b4; }
 .impact-metric.alt strong { color: #8deaff; }
+.impact-metric.emphasis.success {
+  border-color: rgba(52, 211, 153, 0.22);
+  background: linear-gradient(180deg, rgba(16, 185, 129, 0.12), rgba(9, 17, 28, 0.8));
+}
 
 .impact-trend {
   display: inline-flex;

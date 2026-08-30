@@ -7,7 +7,7 @@ export default function RecoveryBreakdownChart({ data = [], total = 0 }) {
 
   return (
     <div className="chart-card donut-card">
-      <ResponsiveContainer width="100%" height={280}>
+      <ResponsiveContainer width="100%" height={380}>
         <PieChart>
           <Pie data={chartData} dataKey="value" nameKey="name" innerRadius={52} outerRadius={88} paddingAngle={3}>
             {chartData.map((entry) => (

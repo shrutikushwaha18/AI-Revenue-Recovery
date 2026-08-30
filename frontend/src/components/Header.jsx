@@ -19,7 +19,6 @@ export default function Header({
         </div>
         <div className="brand-lockup">
           <h1>RecoverAI</h1>
-          <p className="subtitle">Autonomous Revenue Recovery Agent</p>
         </div>
       </div>
 

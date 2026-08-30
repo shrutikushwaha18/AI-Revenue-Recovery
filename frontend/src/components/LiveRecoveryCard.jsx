@@ -54,7 +54,12 @@ const getRecoveryState = (transaction, auditLogs) => {
     }
   }
 
-  if (status === 'failed' || status === 'human_review' || status === 'stopped') {
+  if (
+    status === 'failed'
+    || status === 'human_review'
+    || status === 'stopped'
+    || status === 'recovered'
+  ) {
     return {
       state: 'failed',
       title: 'Recovery Requires Attention',
@@ -77,7 +82,7 @@ const getRecoveryState = (transaction, auditLogs) => {
   }
 }
 
-export default function LiveRecoveryCard({ transaction, auditLogs = [] }) {
+export default function LiveRecoveryCard({ transaction, auditLogs = [], verified = false }) {
   const [isModalOpen, setIsModalOpen] = useState(false)
   const status = String(transaction?.status || transaction?.recovery_status || '').toLowerCase()
   const recoveredAmount = Number(transaction?.recovered_amount || 0)
@@ -86,7 +91,41 @@ export default function LiveRecoveryCard({ transaction, auditLogs = [] }) {
   const hasDecision = Boolean(transaction?.recovery_action)
   const hasPaymentLink = Boolean(transaction?.payment_link || transaction?.payment_link_id || hasAuditAction(auditLogs, /payment_link_created|payment link/i))
   const hasFailure = Boolean(transaction?.failure_reason)
-  const recoveryState = useMemo(() => getRecoveryState(transaction, auditLogs), [transaction, auditLogs])
+  const recoveryState = useMemo(() => {
+    if (verified) {
+      return {
+        state: 'verified',
+        title: 'Verified End-to-End Recovery',
+        badge: 'VERIFIED',
+        badgeClass: 'verified',
+        subtitle: 'Signed Webhook Verified',
+        footer: '✓ END-TO-END RECOVERY VERIFIED',
+        label: 'Verified',
+      }
+    }
+
+    if (status === 'failed' || status === 'human_review' || status === 'stopped') {
+      return {
+        state: 'failed',
+        title: 'Recovery Requires Attention',
+        badge: 'ATTENTION REQUIRED',
+        badgeClass: 'attention',
+        subtitle: 'Recovery requires a policy or manual review',
+        footer: null,
+        label: 'Attention required',
+      }
+    }
+
+    return {
+      state: 'pending',
+      title: 'Recovery In Progress',
+      badge: 'IN PROGRESS',
+      badgeClass: 'pending',
+      subtitle: 'Real recovery execution through Razorpay Test Mode',
+      footer: null,
+      label: 'In progress',
+    }
+  }, [verified, status])
 
   useEffect(() => {
     if (!isModalOpen) return undefined
@@ -257,7 +296,7 @@ export default function LiveRecoveryCard({ transaction, auditLogs = [] }) {
 
           {recoveryState.state === 'verified' ? (
             <>
-              <p>100% of this transaction recovered</p>
+              <p className="progress-success-label">100% Recovered</p>
               <div className="recovery-progress-bar">
                 <span style={{ width: `${recoveryProgress}%` }} />
               </div>
@@ -271,6 +310,19 @@ export default function LiveRecoveryCard({ transaction, auditLogs = [] }) {
             </>
           )}
         </div>
+
+        {recoveryState.state === 'verified' && (
+          <button
+            type="button"
+            className="verification-proof-button"
+            onClick={(event) => {
+              event.stopPropagation()
+              setIsModalOpen(true)
+            }}
+          >
+            View Verification Proof
+          </button>
+        )}
 
         <div className="live-audit-card">
           <div className="audit-header">
@@ -344,8 +396,16 @@ export default function LiveRecoveryCard({ transaction, auditLogs = [] }) {
                 <strong>{transaction?.payment_link_id || 'Not generated'}</strong>
               </div>
               <div className="modal-stat">
+                <span>Payment Link</span>
+                <strong>{transaction?.payment_link || 'Not generated'}</strong>
+              </div>
+              <div className="modal-stat">
                 <span>Razorpay Reference ID</span>
                 <strong>{transaction?.razorpay_reference_id || 'Not available'}</strong>
+              </div>
+              <div className="modal-stat">
+                <span>Recovered At</span>
+                <strong>{transaction?.recovered_at ? new Date(transaction.recovered_at).toLocaleString('en-IN') : 'Not available'}</strong>
               </div>
               <div className="modal-stat">
                 <span>Recovery Action</span>

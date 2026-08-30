@@ -7,7 +7,7 @@ export default function OutcomeBreakdownChart({ data = [] }) {
 
   return (
     <div className="chart-card bar-card">
-      <ResponsiveContainer width="100%" height={280}>
+      <ResponsiveContainer width="100%" height={380}>
         <BarChart data={chartData} layout="vertical" margin={{ left: 8, right: 14 }}>
           <XAxis type="number" allowDecimals={false} />
           <YAxis type="category" dataKey="name" width={100} />

@@ -73,23 +73,20 @@ function App() {
       setLoading(true)
       setError('')
 
-      const [metricsData, recoveryData, outcomeData, batchTransactionsData, allTransactionsData, auditData] = await Promise.all([
+      const [metricsData, recoveryData, outcomeData, batchTransactionsData, liveRecoveryData] = await Promise.all([
         fetchJson('/api/dashboard/metrics'),
         fetchJson('/api/dashboard/recovery-breakdown'),
         fetchJson('/api/dashboard/outcome-breakdown'),
         fetchJson('/api/batch/transactions'),
-        fetchJson('/api/transactions'),
-        fetchJson('/api/audit/TXN005'),
+        fetchJson('/api/live-recovery/TXN005'),
       ])
 
       setMetrics(metricsData)
       setRecoveryBreakdown(recoveryData?.breakdown || {})
       setOutcomeBreakdown(outcomeData || {})
       setTransactions(batchTransactionsData?.transactions || [])
-
-      const tx = (allTransactionsData || []).find((row) => row.transaction_id === 'TXN005') || null
-      setLiveTransaction(tx)
-      setAuditLogs(auditData || [])
+      setLiveTransaction(liveRecoveryData?.transaction || null)
+      setAuditLogs(liveRecoveryData?.audit || [])
     } catch (err) {
       setError(err?.response?.data?.error || err?.message || 'Unable to reach RecoverAI backend')
     } finally {
@@ -387,8 +384,7 @@ function App() {
             <div className="eyebrow-row">
               <span className="eyebrow-inline">RecoverAI</span>
             </div>
-            <h1>RecoverAI</h1>
-            <h2>Autonomous Revenue Recovery Agent</h2>
+            <h1>Autonomous Revenue Recovery Agent</h1>
             <p>
               Detect revenue leakage. Decide the safest recovery path. Recover and verify automatically.
             </p>
@@ -403,7 +399,12 @@ function App() {
         <RevenueImpact metrics={metrics} />
 
         <section className="section-block">
-          <LiveRecoveryCard transaction={liveTransaction} auditLogs={auditLogs} onOpen={() => setOpenLiveProof(true)} />
+          <LiveRecoveryCard
+            transaction={liveTransaction}
+            auditLogs={auditLogs}
+            verified={Boolean(liveTransaction && liveTransaction.status === 'recovered' && Number(liveTransaction.recovered_amount || 0) > 0 && auditLogs.some((item) => String(item?.action || '').toLowerCase() === 'revenue_recovered'))}
+            onOpen={() => setOpenLiveProof(true)}
+          />
         </section>
 
         <AgentDecisionCenter breakdown={recoveryBreakdown} onOpenHumanReview={() => setOpenHumanReview(true)} />

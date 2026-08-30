@@ -335,6 +335,40 @@ def audit(transaction_id):
     return jsonify([dict(row) for row in rows])
 
 
+@app.route("/api/live-recovery/<transaction_id>", methods=["GET"])
+def live_recovery(transaction_id):
+    conn = get_db()
+    transaction = conn.execute(
+        "SELECT * FROM transactions WHERE transaction_id = ?",
+        (transaction_id,),
+    ).fetchone()
+
+    if transaction is None:
+        conn.close()
+        return jsonify({"transaction": None, "audit": [], "verified": False})
+
+    transaction_data = dict(transaction)
+    audit_rows = conn.execute(
+        "SELECT * FROM audit_logs WHERE transaction_id = ? ORDER BY created_at ASC",
+        (transaction_id,),
+    ).fetchall()
+    audit_data = [dict(row) for row in audit_rows]
+
+    verified = (
+        str(transaction_data.get("status") or "").lower() == "recovered"
+        and str(transaction_data.get("recovery_status") or "").lower() == "successful"
+        and float(transaction_data.get("recovered_amount") or 0) > 0
+        and any(str(item.get("action") or "").lower() == "revenue_recovered" for item in audit_data)
+    )
+
+    conn.close()
+    return jsonify({
+        "transaction": transaction_data,
+        "audit": audit_data,
+        "verified": verified,
+    })
+
+
 @app.route("/api/batch/analyze", methods=["POST"])
 def batch_analyze():
     ensure_batch_seeded()

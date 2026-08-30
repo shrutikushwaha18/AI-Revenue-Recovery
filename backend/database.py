@@ -31,7 +31,14 @@ def init_db():
             razorpay_reference_id TEXT,
             recovered_amount REAL DEFAULT 0,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            is_synthetic INTEGER DEFAULT 0,
+            recovery_attempted INTEGER DEFAULT 0,
+            recovery_success INTEGER DEFAULT 0,
+            recovery_reason TEXT,
+            final_recovery_status TEXT,
+            recovered_at TIMESTAMP,
+            customer_opted_out INTEGER DEFAULT 0
         )
         """
     )
@@ -40,10 +47,21 @@ def init_db():
         row[1] for row in conn.execute("PRAGMA table_info(transactions)").fetchall()
     }
 
-    if "payment_link_id" not in transaction_columns:
-        conn.execute("ALTER TABLE transactions ADD COLUMN payment_link_id TEXT")
-    if "razorpay_reference_id" not in transaction_columns:
-        conn.execute("ALTER TABLE transactions ADD COLUMN razorpay_reference_id TEXT")
+    for column_name, column_type in {
+        "payment_link_id": "TEXT",
+        "razorpay_reference_id": "TEXT",
+        "is_synthetic": "INTEGER DEFAULT 0",
+        "recovery_attempted": "INTEGER DEFAULT 0",
+        "recovery_success": "INTEGER DEFAULT 0",
+        "recovery_reason": "TEXT",
+        "final_recovery_status": "TEXT",
+        "recovered_at": "TIMESTAMP",
+        "customer_opted_out": "INTEGER DEFAULT 0",
+    }.items():
+        if column_name not in transaction_columns:
+            conn.execute(
+                f"ALTER TABLE transactions ADD COLUMN {column_name} {column_type}"
+            )
 
     conn.execute(
         """

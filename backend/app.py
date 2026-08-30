@@ -174,6 +174,19 @@ def simulate_batch_recovery(transaction, action, rng):
     }
 
 
+def normalize_recovery_outcome(row):
+    final_status = (row.get("final_recovery_status") or row.get("recovery_status") or row.get("status") or "").strip().lower()
+    if final_status in {"successful", "recovered"}:
+        return "recovered"
+    if final_status == "human_review":
+        return "human_review"
+    if final_status == "stopped":
+        return "stopped"
+    if final_status == "failed":
+        return "failed"
+    return "pending"
+
+
 @app.route("/")
 def home():
     return jsonify({"message": "RecoverAI backend running"})
@@ -413,19 +426,25 @@ def dashboard_metrics():
 
     total_transactions = len(rows)
     total_revenue_at_risk = sum(float(row["amount"]) for row in rows)
-    recovered_transactions = sum(
-        1 for row in rows if int(row["recovery_success"] or 0) == 1 or row["final_recovery_status"] == "successful"
-    )
+
+    outcome_counts = {
+        "recovered": 0,
+        "human_review": 0,
+        "failed": 0,
+        "stopped": 0,
+        "pending": 0,
+    }
+    for row in rows:
+        outcome = normalize_recovery_outcome(dict(row))
+        outcome_counts[outcome] = outcome_counts.get(outcome, 0) + 1
+
+    recovered_transactions = outcome_counts["recovered"]
+    human_escalations = outcome_counts["human_review"]
+    failed_recoveries = outcome_counts["failed"]
+    stopped_by_policy = outcome_counts["stopped"]
+    pending_recoveries = outcome_counts["pending"]
     total_revenue_recovered = sum(
-        float(row["recovered_amount"] or 0) for row in rows if int(row["recovery_success"] or 0) == 1
-    )
-    failed_recoveries = sum(
-        1 for row in rows if int(row["recovery_attempted"] or 0) == 1 and int(row["recovery_success"] or 0) == 0
-    )
-    human_escalations = sum(1 for row in rows if row["recovery_action"] == "human_review")
-    stopped_by_policy = sum(1 for row in rows if row["final_recovery_status"] == "stopped")
-    pending_recoveries = sum(
-        1 for row in rows if row["final_recovery_status"] in (None, "pending", "human_review", "stopped")
+        float(row["recovered_amount"] or 0) for row in rows if normalize_recovery_outcome(dict(row)) == "recovered"
     )
 
     recovery_rate_by_amount = (

@@ -53,3 +53,22 @@ def test_dashboard_metrics_are_mutually_exclusive():
             + payload["pending_recoveries"]
             == payload["total_transactions"]
         )
+
+        outcome_response = client.get('/api/dashboard/outcome-breakdown')
+        outcome_payload = outcome_response.get_json()
+
+        assert outcome_response.status_code == 200
+        assert outcome_payload["successful"] == 1
+        assert outcome_payload["human_review"] == 1
+        assert outcome_payload["failed"] == 1
+        assert outcome_payload["stopped"] == 1
+        assert outcome_payload["pending"] == 1
+        assert outcome_payload["synthetic_simulation"] is True
+        assert (
+            outcome_payload["successful"]
+            + outcome_payload["human_review"]
+            + outcome_payload["failed"]
+            + outcome_payload["pending"]
+            + outcome_payload["stopped"]
+            == payload["total_transactions"]
+        )

@@ -472,6 +472,32 @@ def dashboard_metrics():
     )
 
 
+@app.route("/api/dashboard/outcome-breakdown", methods=["GET"])
+def dashboard_outcome_breakdown():
+    ensure_batch_seeded()
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT * FROM transactions WHERE is_synthetic = 1"
+    ).fetchall()
+
+    outcome_counts = {
+        "successful": 0,
+        "human_review": 0,
+        "failed": 0,
+        "pending": 0,
+        "stopped": 0,
+    }
+    for row in rows:
+        outcome = normalize_recovery_outcome(dict(row))
+        if outcome == "recovered":
+            outcome_counts["successful"] += 1
+        elif outcome in outcome_counts:
+            outcome_counts[outcome] += 1
+
+    conn.close()
+    return jsonify({**outcome_counts, "synthetic_simulation": True})
+
+
 @app.route("/api/dashboard/recovery-breakdown", methods=["GET"])
 def dashboard_recovery_breakdown():
     ensure_batch_seeded()

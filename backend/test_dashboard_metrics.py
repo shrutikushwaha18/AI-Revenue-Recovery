@@ -1,5 +1,100 @@
+import hashlib
+import hmac
+import json
+import os
+
 from app import app
 from database import get_db
+
+
+def test_payment_link_paid_webhook_sets_successful_recovery_state_and_is_idempotent():
+    secret = "test-webhook-secret"
+    original_secret = os.environ.get("RAZORPAY_WEBHOOK_SECRET")
+    os.environ["RAZORPAY_WEBHOOK_SECRET"] = secret
+
+    try:
+        with app.test_client() as client:
+            conn = get_db()
+            conn.execute(
+                """
+                UPDATE transactions
+                SET status = 'failed',
+                    recovery_status = 'pending',
+                    final_recovery_status = NULL,
+                    recovery_attempted = 0,
+                    recovery_success = 0,
+                    recovered_amount = 0,
+                    recovered_at = NULL,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE transaction_id = 'TXN005'
+                """
+            )
+            conn.execute("DELETE FROM audit_logs WHERE transaction_id = 'TXN005' AND action = 'revenue_recovered'")
+            conn.commit()
+
+            payload = {
+                "event": "payment_link.paid",
+                "payload": {
+                    "payment_link": {
+                        "entity": {
+                            "reference_id": "REC_TXN005_123"
+                        }
+                    }
+                },
+            }
+            body = json.dumps(payload).encode("utf-8")
+            signature = hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
+
+            response = client.post(
+                "/api/webhook/razorpay",
+                data=body,
+                content_type="application/json",
+                headers={"X-Razorpay-Signature": signature},
+            )
+
+            assert response.status_code == 200
+
+            tx = conn.execute(
+                "SELECT * FROM transactions WHERE transaction_id = 'TXN005'"
+            ).fetchone()
+            assert tx["status"] == "recovered"
+            assert tx["recovery_status"] == "successful"
+            assert tx["final_recovery_status"] == "successful"
+            assert tx["recovery_attempted"] == 1
+            assert tx["recovery_success"] == 1
+            assert tx["recovered_amount"] == 3499
+            assert tx["recovered_at"] is not None
+
+            audit_actions = [
+                row["action"]
+                for row in conn.execute(
+                    "SELECT action FROM audit_logs WHERE transaction_id = 'TXN005' ORDER BY created_at ASC"
+                ).fetchall()
+            ]
+            assert audit_actions.count("revenue_recovered") == 1
+
+            second_response = client.post(
+                "/api/webhook/razorpay",
+                data=body,
+                content_type="application/json",
+                headers={"X-Razorpay-Signature": signature},
+            )
+            assert second_response.status_code == 200
+
+            audit_actions_after = [
+                row["action"]
+                for row in conn.execute(
+                    "SELECT action FROM audit_logs WHERE transaction_id = 'TXN005' ORDER BY created_at ASC"
+                ).fetchall()
+            ]
+            assert audit_actions_after.count("revenue_recovered") == 1
+
+            conn.close()
+    finally:
+        if original_secret is None:
+            os.environ.pop("RAZORPAY_WEBHOOK_SECRET", None)
+        else:
+            os.environ["RAZORPAY_WEBHOOK_SECRET"] = original_secret
 
 
 def test_dashboard_metrics_are_mutually_exclusive():

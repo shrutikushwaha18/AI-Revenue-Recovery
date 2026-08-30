@@ -549,34 +549,65 @@ def razorpay_webhook():
 
         conn = get_db()
         row = conn.execute(
-            "SELECT amount FROM transactions WHERE transaction_id = ?",
+            """
+            SELECT transaction_id, amount, status, recovery_status, final_recovery_status,
+                   recovery_attempted, recovery_success, recovered_amount
+            FROM transactions
+            WHERE transaction_id = ?
+            """,
             (transaction_id,),
         ).fetchone()
 
         if row is not None:
-            conn.execute(
-                """
-                UPDATE transactions
-                SET status = 'recovered',
-                    recovery_status = 'successful',
-                    recovered_amount = amount,
-                    updated_at = CURRENT_TIMESTAMP,
-                    recovered_at = CURRENT_TIMESTAMP
-                WHERE transaction_id = ?
-                """,
-                (transaction_id,),
+            already_recovered = (
+                row["status"] == "recovered"
+                and row["recovery_status"] == "successful"
+                and row["final_recovery_status"] == "successful"
+                and int(row["recovery_attempted"] or 0) == 1
+                and int(row["recovery_success"] or 0) == 1
+                and float(row["recovered_amount"] or 0) > 0
             )
-            conn.execute(
-                """
-                INSERT INTO audit_logs (transaction_id, action, reason)
-                VALUES (?, ?, ?)
-                """,
-                (
-                    transaction_id,
-                    "revenue_recovered",
-                    "Payment Link successfully paid",
-                ),
-            )
+
+            if not already_recovered:
+                conn.execute(
+                    """
+                    UPDATE transactions
+                    SET status = 'recovered',
+                        recovery_status = 'successful',
+                        final_recovery_status = 'successful',
+                        recovery_attempted = 1,
+                        recovery_success = 1,
+                        recovered_amount = amount,
+                        recovered_at = CURRENT_TIMESTAMP,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE transaction_id = ?
+                    """,
+                    (transaction_id,),
+                )
+
+                audit_exists = conn.execute(
+                    """
+                    SELECT 1
+                    FROM audit_logs
+                    WHERE transaction_id = ? AND action = 'revenue_recovered'
+                    LIMIT 1
+                    """,
+                    (transaction_id,),
+                ).fetchone()
+
+                if audit_exists is None:
+                    conn.execute(
+                        """
+                        INSERT INTO audit_logs (transaction_id, action, reason)
+                        VALUES (?, ?, ?)
+                        """,
+                        (
+                            transaction_id,
+                            "revenue_recovered",
+                            "Payment Link successfully paid",
+                        ),
+                    )
+
             conn.commit()
 
         conn.close()

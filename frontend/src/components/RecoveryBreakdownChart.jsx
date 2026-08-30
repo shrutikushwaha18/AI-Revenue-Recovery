@@ -1,17 +1,26 @@
-import { BarChart, Bar, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
+import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from 'recharts'
 
-export default function RecoveryBreakdownChart({ data = [] }) {
+const palette = ['#f59e0b', '#38bdf8', '#a78bfa', '#34d399', '#f87171']
+
+export default function RecoveryBreakdownChart({ data = [], total = 0 }) {
+  const chartData = data.map((item, index) => ({ ...item, fill: palette[index % palette.length] }))
+
   return (
-    <div className="chart-card">
-      <ResponsiveContainer width="100%" height={260}>
-        <BarChart data={data}>
-          <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-          <XAxis dataKey="name" tick={{ fontSize: 12 }} />
-          <YAxis allowDecimals={false} />
+    <div className="chart-card donut-card">
+      <ResponsiveContainer width="100%" height={280}>
+        <PieChart>
+          <Pie data={chartData} dataKey="value" nameKey="name" innerRadius={52} outerRadius={88} paddingAngle={3}>
+            {chartData.map((entry) => (
+              <Cell key={entry.name} fill={entry.fill} />
+            ))}
+          </Pie>
           <Tooltip />
-          <Bar dataKey="value" radius={[6, 6, 0, 0]} fill="#2ec4b6" />
-        </BarChart>
+        </PieChart>
       </ResponsiveContainer>
+      <div className="donut-center">
+        <strong>{total}</strong>
+        <span>Decisions</span>
+      </div>
     </div>
   )
 }

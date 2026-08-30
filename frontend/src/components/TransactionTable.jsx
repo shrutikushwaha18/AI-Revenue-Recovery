@@ -2,22 +2,40 @@ import { useMemo, useState } from 'react'
 
 const PAGE_SIZE = 10
 
-export default function TransactionTable({ transactions = [] }) {
+const badgeClassMap = {
+  successful: 'badge-success',
+  human_review: 'badge-warning',
+  failed: 'badge-danger',
+  pending: 'badge-neutral',
+  stopped: 'badge-stopped',
+}
+
+export default function TransactionTable({ transactions = [], onSelectRow }) {
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState('all')
   const [failureFilter, setFailureFilter] = useState('all')
   const [actionFilter, setActionFilter] = useState('all')
   const [page, setPage] = useState(1)
 
-  const uniqueStatus = useMemo(() => [...new Set(transactions.map((trx) => trx.final_recovery_status || trx.recovery_status || 'pending'))], [transactions])
-  const uniqueFailures = useMemo(() => [...new Set(transactions.map((trx) => trx.failure_reason || 'unknown'))], [transactions])
-  const uniqueActions = useMemo(() => [...new Set(transactions.map((trx) => trx.recovery_action || 'none'))], [transactions])
+  const uniqueStatus = useMemo(
+    () => [...new Set(transactions.map((trx) => trx.final_recovery_status || trx.recovery_status || 'pending'))],
+    [transactions],
+  )
+  const uniqueFailures = useMemo(
+    () => [...new Set(transactions.map((trx) => trx.failure_reason || 'unknown'))],
+    [transactions],
+  )
+  const uniqueActions = useMemo(
+    () => [...new Set(transactions.map((trx) => trx.recovery_action || 'none'))],
+    [transactions],
+  )
 
   const filteredRows = useMemo(() => {
     const query = search.toLowerCase()
     return transactions.filter((trx) => {
       const matchesSearch = !query || [trx.transaction_id, trx.customer_name, trx.failure_reason, trx.recovery_action].join(' ').toLowerCase().includes(query)
-      const matchesStatus = statusFilter === 'all' || (trx.final_recovery_status || trx.recovery_status || 'pending') === statusFilter
+      const statusValue = trx.final_recovery_status || trx.recovery_status || 'pending'
+      const matchesStatus = statusFilter === 'all' || statusValue === statusFilter
       const matchesFailure = failureFilter === 'all' || (trx.failure_reason || 'unknown') === failureFilter
       const matchesAction = actionFilter === 'all' || (trx.recovery_action || 'none') === actionFilter
       return matchesSearch && matchesStatus && matchesFailure && matchesAction
@@ -27,58 +45,73 @@ export default function TransactionTable({ transactions = [] }) {
   const totalPages = Math.max(1, Math.ceil(filteredRows.length / PAGE_SIZE))
   const currentPage = Math.min(page, totalPages)
   const paginatedRows = filteredRows.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE)
+  const startIndex = filteredRows.length ? (currentPage - 1) * PAGE_SIZE + 1 : 0
+  const endIndex = Math.min(currentPage * PAGE_SIZE, filteredRows.length)
 
   return (
     <section className="panel table-panel">
       <div className="panel-header section-header-row">
-        <h3>Batch Recovery Transactions</h3>
+        <div>
+          <span className="eyebrow">Synthetic Batch</span>
+          <h3>Transaction Ledger</h3>
+        </div>
       </div>
 
       <div className="filters">
-        <input value={search} onChange={(e) => { setSearch(e.target.value); setPage(1) }} placeholder="Search transaction or customer" />
+        <input
+          value={search}
+          onChange={(e) => {
+            setSearch(e.target.value)
+            setPage(1)
+          }}
+          placeholder="Search transaction or customer..."
+        />
         <select value={statusFilter} onChange={(e) => { setStatusFilter(e.target.value); setPage(1) }}>
-          <option value="all">All statuses</option>
+          <option value="all">All Outcomes</option>
           {uniqueStatus.map((option) => <option key={option} value={option}>{option}</option>)}
         </select>
         <select value={failureFilter} onChange={(e) => { setFailureFilter(e.target.value); setPage(1) }}>
-          <option value="all">All failure reasons</option>
+          <option value="all">All Failures</option>
           {uniqueFailures.map((option) => <option key={option} value={option}>{option}</option>)}
         </select>
         <select value={actionFilter} onChange={(e) => { setActionFilter(e.target.value); setPage(1) }}>
-          <option value="all">All actions</option>
+          <option value="all">All Decisions</option>
           {uniqueActions.map((option) => <option key={option} value={option}>{option}</option>)}
         </select>
       </div>
+
+      <div className="table-meta">Showing {startIndex}–{endIndex} of {filteredRows.length}</div>
 
       <div className="table-wrapper">
         <table>
           <thead>
             <tr>
-              <th>Transaction ID</th>
+              <th>Transaction</th>
               <th>Customer</th>
               <th>Amount</th>
-              <th>Failure Reason</th>
-              <th>Recovery Action</th>
-              <th>Recovery Reason</th>
-              <th>Retry Count</th>
-              <th>Final Recovery Status</th>
-              <th>Recovered Amount</th>
+              <th>Failure</th>
+              <th>Agent Decision</th>
+              <th>Retry</th>
+              <th>Outcome</th>
+              <th>Recovered</th>
             </tr>
           </thead>
           <tbody>
-            {paginatedRows.length ? paginatedRows.map((trx) => (
-              <tr key={trx.transaction_id}>
-                <td>{trx.transaction_id}</td>
-                <td>{trx.customer_name || trx.customer || '—'}</td>
-                <td>{`₹${Number(trx.amount || 0).toLocaleString('en-IN')}`}</td>
-                <td>{trx.failure_reason || '—'}</td>
-                <td>{trx.recovery_action || '—'}</td>
-                <td>{trx.recovery_reason || '—'}</td>
-                <td>{trx.retry_count ?? 0}</td>
-                <td>{trx.final_recovery_status || trx.recovery_status || 'pending'}</td>
-                <td>{`₹${Number(trx.recovered_amount || 0).toLocaleString('en-IN')}`}</td>
-              </tr>
-            )) : <tr><td colSpan="9">No records match the current filters.</td></tr>}
+            {paginatedRows.length ? paginatedRows.map((trx) => {
+              const statusValue = trx.final_recovery_status || trx.recovery_status || 'pending'
+              return (
+                <tr key={trx.transaction_id} onClick={() => onSelectRow?.(trx)} className="table-row-clickable">
+                  <td>{trx.transaction_id}</td>
+                  <td>{trx.customer_name || trx.customer || '—'}</td>
+                  <td>₹{Number(trx.amount || 0).toLocaleString('en-IN')}</td>
+                  <td><span className="failure-badge">{trx.failure_reason || '—'}</span></td>
+                  <td>{trx.recovery_action || '—'}</td>
+                  <td>{trx.retry_count ?? 0}</td>
+                  <td><span className={`status-badge ${badgeClassMap[statusValue] || 'badge-neutral'}`}>{statusValue}</span></td>
+                  <td>₹{Number(trx.recovered_amount || 0).toLocaleString('en-IN')}</td>
+                </tr>
+              )
+            }) : <tr><td colSpan="8">No records match the current filters.</td></tr>}
           </tbody>
         </table>
       </div>

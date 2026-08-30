@@ -7,6 +7,10 @@ from dotenv import load_dotenv
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 
+SIMULATION_SEED = "recoverai-v1"
+SIMULATION_VERSION = "1.0"
+SIMULATION_KEY_VERSION = "v1"
+
 from database import get_db, init_db
 from razorpay_service import create_payment_link, generate_reference_id
 from recovery_agent import decide_recovery_action
@@ -90,6 +94,22 @@ def ensure_batch_seeded():
     conn.close()
 
 
+def deterministic_recovery_score(transaction_id, failure_reason, recovery_action, simulation_version=SIMULATION_KEY_VERSION):
+    key = f"{transaction_id}:{failure_reason}:{recovery_action}:{simulation_version}"
+    digest = hashlib.sha256(key.encode("utf-8")).hexdigest()
+    value = int(digest[:16], 16) / float(16 ** 16)
+    return value
+
+
+def recovery_probability_for(reason, action):
+    probabilities = {
+        "retry": {"network_error": 0.80, "timeout": 0.75},
+        "payment_link": {"bank_decline": 0.65, "abandoned_checkout": 0.70, "expired_payment": 0.70},
+        "payment_link_later": {"insufficient_funds": 0.50},
+    }
+    return probabilities.get(action, {}).get(reason, 0.0)
+
+
 def safe_batch_decision(transaction):
     reason = transaction.get("failure_reason", "unknown_failure")
     retries = int(transaction.get("retry_count", 0))
@@ -147,20 +167,20 @@ def safe_batch_decision(transaction):
     }
 
 
-def simulate_batch_recovery(transaction, action, rng):
+def simulate_batch_recovery(transaction, action):
     reason = transaction.get("failure_reason", "unknown_failure")
-    probabilities = {
-        "retry": {"network_error": 0.9, "timeout": 0.85},
-        "payment_link": {"bank_decline": 0.8, "abandoned_checkout": 0.7, "expired_payment": 0.75},
-        "payment_link_later": {"insufficient_funds": 0.6},
-    }
-
-    chance = probabilities.get(action, {}).get(reason, 0.0)
+    chance = recovery_probability_for(reason, action)
     if chance == 0:
         return {"recovery_success": 0, "recovered_amount": 0.0, "recovery_status": "pending"}
 
-    success = rng.random() < chance
-    if success:
+    deterministic_value = deterministic_recovery_score(
+        transaction.get("transaction_id", "UNKNOWN"),
+        reason,
+        action,
+        SIMULATION_KEY_VERSION,
+    )
+
+    if deterministic_value <= chance:
         return {
             "recovery_success": 1,
             "recovered_amount": float(transaction.get("amount", 0) or 0),
@@ -369,18 +389,97 @@ def live_recovery(transaction_id):
     })
 
 
+def reset_batch_transactions():
+    conn = get_db()
+    conn.execute(
+        """
+        UPDATE transactions
+        SET status = 'failed',
+            recovery_status = 'pending',
+            recovery_action = NULL,
+            recovery_reason = NULL,
+            recovery_attempted = 0,
+            recovery_success = 0,
+            recovered_amount = 0,
+            final_recovery_status = NULL,
+            recovered_at = NULL,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE transaction_id LIKE 'BATCH%' AND is_synthetic = 1
+        """
+    )
+    conn.execute(
+        "DELETE FROM audit_logs WHERE transaction_id LIKE 'BATCH%'"
+    )
+    conn.commit()
+    conn.close()
+
+
+@app.route("/api/batch/reset", methods=["POST"])
+def batch_reset():
+    reset_batch_transactions()
+    return jsonify({
+        "synthetic_simulation": True,
+        "reset": True,
+        "simulation_seed": SIMULATION_SEED,
+        "simulation_version": SIMULATION_VERSION,
+        "reproducible": True,
+    })
+
+
 @app.route("/api/batch/analyze", methods=["POST"])
 def batch_analyze():
     ensure_batch_seeded()
     conn = get_db()
     rows = conn.execute(
-        "SELECT * FROM transactions WHERE is_synthetic = 1 AND status = 'failed' ORDER BY id"
+        "SELECT * FROM transactions WHERE is_synthetic = 1 ORDER BY id"
     ).fetchall()
-    batch_rng = random.Random(42)
     summary = []
+
+    conn.execute("DELETE FROM audit_logs WHERE transaction_id LIKE 'BATCH%'")
 
     for row in rows:
         transaction = dict(row)
+        reset_row = {
+            "status": "failed",
+            "recovery_status": "pending",
+            "recovery_action": None,
+            "recovery_reason": None,
+            "recovery_attempted": 0,
+            "recovery_success": 0,
+            "recovered_amount": 0.0,
+            "final_recovery_status": None,
+            "recovered_at": None,
+            "updated_at": "CURRENT_TIMESTAMP",
+        }
+        conn.execute(
+            """
+            UPDATE transactions
+            SET status = ?,
+                recovery_status = ?,
+                recovery_action = ?,
+                recovery_reason = ?,
+                recovery_attempted = ?,
+                recovery_success = ?,
+                recovered_amount = ?,
+                final_recovery_status = ?,
+                recovered_at = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE transaction_id = ?
+            """,
+            (
+                reset_row["status"],
+                reset_row["recovery_status"],
+                reset_row["recovery_action"],
+                reset_row["recovery_reason"],
+                reset_row["recovery_attempted"],
+                reset_row["recovery_success"],
+                reset_row["recovered_amount"],
+                reset_row["final_recovery_status"],
+                reset_row["recovered_at"],
+                transaction["transaction_id"],
+            ),
+        )
+
         decision = safe_batch_decision(transaction)
         action = decision["action"]
         reason = decision["reason"]
@@ -391,7 +490,7 @@ def batch_analyze():
 
         if not decision["blocked"]:
             recovery_attempted = 1
-            result = simulate_batch_recovery(transaction, action, batch_rng)
+            result = simulate_batch_recovery(transaction, action)
             recovery_success = result["recovery_success"]
             recovered_amount = result["recovered_amount"]
             final_status = result["recovery_status"]
@@ -399,11 +498,14 @@ def batch_analyze():
             if recovery_success:
                 final_status = "successful"
                 status_value = "recovered"
+                recovery_status = "successful"
             else:
                 status_value = "failed"
+                recovery_status = "pending"
         else:
             final_status = "human_review" if action == "human_review" else "stopped"
             status_value = "failed"
+            recovery_status = final_status
 
         conn.execute(
             """
@@ -426,9 +528,21 @@ def batch_analyze():
                 recovery_success,
                 recovered_amount,
                 final_status,
-                final_status,
+                recovery_status,
                 status_value,
                 transaction["transaction_id"],
+            ),
+        )
+
+        conn.execute(
+            """
+            INSERT INTO audit_logs (transaction_id, action, reason)
+            VALUES (?, ?, ?)
+            """,
+            (
+                transaction["transaction_id"],
+                "batch_recovery_simulated",
+                f"{action}: {reason}",
             ),
         )
 
@@ -447,7 +561,14 @@ def batch_analyze():
 
     conn.commit()
     conn.close()
-    return jsonify({"synthetic_simulation": True, "processed": len(summary), "results": summary})
+    return jsonify({
+        "synthetic_simulation": True,
+        "processed": len(summary),
+        "results": summary,
+        "simulation_seed": SIMULATION_SEED,
+        "simulation_version": SIMULATION_VERSION,
+        "reproducible": True,
+    })
 
 
 @app.route("/api/dashboard/metrics", methods=["GET"])
@@ -501,6 +622,9 @@ def dashboard_metrics():
             "human_escalations": human_escalations,
             "stopped_by_policy": stopped_by_policy,
             "pending_recoveries": pending_recoveries,
+            "simulation_seed": SIMULATION_SEED,
+            "simulation_version": SIMULATION_VERSION,
+            "reproducible": True,
             "synthetic_simulation": True,
         }
     )

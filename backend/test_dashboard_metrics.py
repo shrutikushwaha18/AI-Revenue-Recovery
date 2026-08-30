@@ -140,6 +140,9 @@ def test_dashboard_metrics_are_mutually_exclusive():
         assert payload["failed_recoveries"] == 1
         assert payload["stopped_by_policy"] == 1
         assert payload["pending_recoveries"] == 1
+        assert payload["simulation_seed"] == "recoverai-v1"
+        assert payload["simulation_version"] == "1.0"
+        assert payload["reproducible"] is True
         assert (
             payload["recovered_transactions"]
             + payload["human_escalations"]
@@ -167,3 +170,48 @@ def test_dashboard_metrics_are_mutually_exclusive():
             + outcome_payload["stopped"]
             == payload["total_transactions"]
         )
+
+
+def test_batch_reset_and_analyze_are_reproducible_and_idempotent():
+    with app.test_client() as client:
+        reset_response = client.post('/api/batch/reset')
+        assert reset_response.status_code == 200
+        reset_payload = reset_response.get_json()
+        assert reset_payload["reset"] is True
+        assert reset_payload["simulation_seed"] == "recoverai-v1"
+        assert reset_payload["simulation_version"] == "1.0"
+        assert reset_payload["reproducible"] is True
+
+        first_analyze = client.post('/api/batch/analyze')
+        assert first_analyze.status_code == 200
+        first_payload = first_analyze.get_json()
+        assert first_payload["reproducible"] is True
+        assert first_payload["simulation_seed"] == "recoverai-v1"
+        assert first_payload["simulation_version"] == "1.0"
+
+        first_metrics = client.get('/api/dashboard/metrics').get_json()
+        first_count = len([
+            row["action"] for row in client.get('/api/batch/transactions').get_json()["transactions"]
+            if row["recovery_action"] == "batch_recovery_simulated"
+        ])
+
+        second_reset = client.post('/api/batch/reset')
+        assert second_reset.status_code == 200
+
+        second_analyze = client.post('/api/batch/analyze')
+        assert second_analyze.status_code == 200
+        second_metrics = client.get('/api/dashboard/metrics').get_json()
+
+        assert first_metrics == second_metrics
+        assert first_analyze.get_json() == second_analyze.get_json()
+
+        batch_audit_rows = client.get('/api/audit/BATCH001').get_json()
+        assert len(batch_audit_rows) == 1
+
+        repeat_analyze = client.post('/api/batch/analyze')
+        assert repeat_analyze.status_code == 200
+        repeat_metrics = client.get('/api/dashboard/metrics').get_json()
+        assert repeat_metrics == second_metrics
+
+        batch_audit_after_repeat = client.get('/api/audit/BATCH001').get_json()
+        assert len(batch_audit_after_repeat) == 1

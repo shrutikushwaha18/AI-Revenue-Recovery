@@ -1,4 +1,4 @@
-import hashlib
+﻿import hashlib
 import hmac
 import json
 import os
@@ -14,7 +14,7 @@ SIMULATION_KEY_VERSION = "v1"
 
 from database import get_db, get_transaction_by_id, init_db
 from razorpay_service import create_payment_link, generate_reference_id
-from recovery_agent import decide_recovery_action
+from recovery_agent import decide_recovery_action, observe_transaction, policy_guard
 from seed import seed_db
 
 load_dotenv()
@@ -264,6 +264,71 @@ def analyze_transaction(transaction_id):
     return jsonify({"transaction": normalized_transaction_id, "decision": decision})
 
 
+@app.route("/api/agent/trace/<transaction_id>", methods=["GET"])
+def agent_trace(transaction_id):
+    normalized_transaction_id = (transaction_id or "").strip()
+    conn = get_db()
+    transaction_row = conn.execute(
+        "SELECT * FROM transactions WHERE transaction_id = ?",
+        (normalized_transaction_id,),
+    ).fetchone()
+
+    if transaction_row is None:
+        conn.close()
+        return jsonify({"error": "Transaction not found"}), 404
+
+    transaction = dict(transaction_row)
+    audit_rows = conn.execute(
+        "SELECT * FROM audit_logs WHERE transaction_id = ? ORDER BY created_at ASC",
+        (normalized_transaction_id,),
+    ).fetchall()
+    audit_logs = [dict(row) for row in audit_rows]
+    conn.close()
+
+    payment_link_audit = next(
+        (item for item in audit_logs if item.get("action") == "payment_link_created"),
+        None,
+    )
+    revenue_recovered = any(item.get("action") == "revenue_recovered" for item in audit_logs)
+    decision = decide_recovery_action(transaction)
+    if transaction.get("recovery_action") and revenue_recovered:
+        decision = {
+            "action": transaction.get("recovery_action"),
+            "reason": payment_link_audit.get("reason") if payment_link_audit else "Previously recorded recovery decision",
+            "confidence": None,
+            "confidence_type": "historical decision record",
+            "risk_level": "low",
+            "requires_human_review": False,
+        }
+
+    guardrails = policy_guard(transaction, decision, historical_execution=bool(payment_link_audit))
+    execution = {
+        "executed": bool(transaction.get("recovery_attempted")),
+        "action": transaction.get("recovery_action"),
+        "payment_link_created": bool(transaction.get("payment_link_id")),
+        "payment_link_id": transaction.get("payment_link_id"),
+        "razorpay_reference_id": transaction.get("razorpay_reference_id"),
+        "external_tool": "Razorpay Payment Link" if transaction.get("payment_link_id") else None,
+    }
+    outcome = {
+        "status": transaction.get("status"),
+        "recovery_status": transaction.get("recovery_status"),
+        "recovered": revenue_recovered and str(transaction.get("status") or "").lower() == "recovered",
+        "recovered_amount": transaction.get("recovered_amount"),
+        "recovered_at": transaction.get("recovered_at"),
+        "signed_webhook": revenue_recovered,
+    }
+
+    return jsonify({
+        "transaction_id": normalized_transaction_id,
+        "observation": observe_transaction(transaction),
+        "decision": decision,
+        "guardrails": guardrails,
+        "execution": execution,
+        "outcome": outcome,
+    })
+
+
 @app.route("/api/recover/<transaction_id>", methods=["POST"])
 def recover_transaction(transaction_id):
     normalized_transaction_id = (transaction_id or "").strip()
@@ -279,6 +344,7 @@ def recover_transaction(transaction_id):
 
     transaction = dict(row)
     decision = decide_recovery_action(transaction)
+    guardrails = policy_guard(transaction, decision)
 
     if int(transaction.get("is_synthetic") or 0) == 1:
         conn.close()
@@ -288,6 +354,7 @@ def recover_transaction(transaction_id):
                 "executed": False,
                 "reason": "Synthetic transactions cannot trigger Razorpay recovery",
                 "decision": decision,
+                "guardrails": guardrails,
             }
         )
 
@@ -301,12 +368,17 @@ def recover_transaction(transaction_id):
                 "transaction_id": normalized_transaction_id,
                 "recovered_amount": recovered_amount,
                 "message": "Transaction already recovered",
+                "guardrails": guardrails,
             }
         )
 
     if decision["action"] not in ["payment_link", "payment_link_later"]:
         conn.close()
-        return jsonify({"decision": decision, "executed": False})
+        return jsonify({"decision": decision, "guardrails": guardrails, "executed": False})
+
+    if not all(check["passed"] for check in guardrails):
+        conn.close()
+        return jsonify({"decision": decision, "guardrails": guardrails, "executed": False})
 
     existing_payment_link = transaction.get("payment_link")
     existing_payment_link_id = transaction.get("payment_link_id")
@@ -764,17 +836,17 @@ def razorpay_webhook():
     received_signature = request.headers.get("X-Razorpay-Signature")
     webhook_secret = os.getenv("RAZORPAY_WEBHOOK_SECRET")
 
-    print("[WEBHOOK] endpoint reached")
-    print("[WEBHOOK] secret configured:", bool(webhook_secret))
-    print("[WEBHOOK] signature header present:", bool(received_signature))
-    print("[WEBHOOK] raw body length:", len(raw_body))
+    app.logger.info("[WEBHOOK] endpoint reached")
+    app.logger.info("[WEBHOOK] secret configured: %s", bool(webhook_secret))
+    app.logger.info("[WEBHOOK] signature header present: %s", bool(received_signature))
+    app.logger.info("[WEBHOOK] raw body length: %s", len(raw_body))
 
     if not webhook_secret:
-        print("[WEBHOOK] webhook secret missing")
+        app.logger.warning("[WEBHOOK] webhook secret missing")
         return jsonify({"error": "Webhook configuration error"}), 500
 
     if not received_signature:
-        print("[WEBHOOK] signature header missing")
+        app.logger.warning("[WEBHOOK] signature header missing")
         return jsonify({"error": "Missing signature"}), 400
 
     expected_signature = hmac.new(
@@ -784,28 +856,28 @@ def razorpay_webhook():
     ).hexdigest()
 
     if not hmac.compare_digest(expected_signature, received_signature):
-        print("[WEBHOOK] signature mismatch")
+        app.logger.warning("[WEBHOOK] signature mismatch")
         return jsonify({"error": "Invalid signature"}), 400
 
-    print("[WEBHOOK] signature verified")
+    app.logger.info("[WEBHOOK] signature verified")
 
     payload = json.loads(raw_body.decode("utf-8"))
     event = payload.get("event")
-    print("[WEBHOOK] event:", event)
+    app.logger.info("[WEBHOOK] event: %s", event)
 
     if event != "payment_link.paid":
         return jsonify({"status": "ok"})
 
     payment_link = payload.get("payload", {}).get("payment_link", {}).get("entity", {})
     reference_id = payment_link.get("reference_id", "")
-    print("[WEBHOOK] reference:", reference_id)
+    app.logger.info("[WEBHOOK] reference: %s", reference_id)
 
     parts = reference_id.split("_") if isinstance(reference_id, str) else []
     transaction_id = None
     if reference_id.startswith("REC_") and len(parts) >= 3:
         transaction_id = parts[1]
 
-    print("[WEBHOOK] extracted transaction:", transaction_id)
+    app.logger.info("[WEBHOOK] extracted transaction: %s", transaction_id)
 
     conn = get_db()
     row = None
@@ -820,7 +892,7 @@ def razorpay_webhook():
             (transaction_id,),
         ).fetchone()
 
-    print("[WEBHOOK] transaction found:", bool(row))
+    app.logger.info("[WEBHOOK] transaction found: %s", bool(row))
 
     if row is not None:
         already_recovered = (
@@ -872,7 +944,7 @@ def razorpay_webhook():
                     ),
                 )
 
-            print("[WEBHOOK] database recovery update completed")
+            app.logger.info("[WEBHOOK] database recovery update completed")
 
         conn.commit()
 

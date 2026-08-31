@@ -184,7 +184,7 @@ export default function LiveRecoveryCard({ transaction, auditLogs = [], verified
     },
     {
       key: 'webhook_verified',
-      title: 'Webhook Verified',
+      title: 'Signed Webhook Verified',
       description: 'Signed Razorpay event received',
       done: hasRecoveredEvent || status === 'recovered',
       icon: ShieldCheck,
@@ -207,6 +207,20 @@ export default function LiveRecoveryCard({ transaction, auditLogs = [], verified
     }
   }
 
+  if (!transaction) {
+    return (
+      <article className="live-recovery-card pending">
+        <header className="live-recovery-header">
+          <div>
+            <span className="live-eyebrow">RAZORPAY TEST MODE</span>
+            <h3>Waiting for verified live recovery</h3>
+            <p className="live-subtitle">A signed, successfully recovered Razorpay transaction will appear here.</p>
+          </div>
+          <span className="status-badge pending"><Clock3 size={14} /> WAITING</span>
+        </header>
+      </article>
+    )
+  }
   return (
     <>
       <article
@@ -232,30 +246,42 @@ export default function LiveRecoveryCard({ transaction, auditLogs = [], verified
         <div className="live-recovery-body">
           <div className="summary-card">
             <div className="summary-header">
-              <span className="summary-transaction-id">{transaction?.transaction_id || 'TXN005'}</span>
+              <span className="summary-transaction-id">{transaction.transaction_id}</span>
               <strong className="summary-amount">₹{originalAmount.toLocaleString('en-IN')}</strong>
             </div>
 
             <div className="summary-meta-list">
               <div className="meta-row">
                 <span>Customer</span>
-                <strong>{transaction?.customer_name || 'Neha Sharma'}</strong>
+              <strong>{transaction.customer_name || 'Not available'}</strong>
               </div>
               <div className="meta-row">
                 <span>Failure Reason</span>
-                <strong>{transaction?.failure_reason || 'Bank Decline'}</strong>
+              <strong>{transaction.failure_reason || 'Not available'}</strong>
               </div>
               <div className="meta-row">
                 <span>Agent Decision</span>
-                <strong>{toDisplayLabel(transaction?.recovery_action || 'Payment Link')}</strong>
+              <strong>{toDisplayLabel(transaction.recovery_action || 'Not recorded')}</strong>
               </div>
               <div className="meta-row">
                 <span>Final Status</span>
-                <strong>{toDisplayLabel(transaction?.status || transaction?.recovery_status || 'pending')}</strong>
+              <strong>{toDisplayLabel(transaction.status || transaction.recovery_status || 'pending')}</strong>
               </div>
               <div className="meta-row">
                 <span>Recovered Amount</span>
                 <strong className={recoveryState.state === 'verified' ? 'accent-success' : ''}>₹{recoveredAmount.toLocaleString('en-IN')}</strong>
+              </div>
+              <div className="meta-row">
+                <span>Recovered At</span>
+                <strong>{transaction.recovered_at ? new Date(transaction.recovered_at).toLocaleString('en-IN') : 'Not available'}</strong>
+              </div>
+              <div className="meta-row">
+                <span>Payment Link ID</span>
+                <strong>{transaction.payment_link_id}</strong>
+              </div>
+              <div className="meta-row">
+                <span>Reference ID</span>
+                <strong>{transaction.razorpay_reference_id}</strong>
               </div>
             </div>
           </div>
@@ -366,7 +392,8 @@ export default function LiveRecoveryCard({ transaction, auditLogs = [], verified
           <div className="verification-strip">
             <span className="verified-mark">✓</span>
             <div>
-              <strong>END-TO-END RECOVERY VERIFIED</strong>
+              <strong>100% RECOVERED</strong>
+              <strong>End-to-End Recovery Verified</strong>
               <small>Razorpay Test Payment • Signed Webhook • Database Updated • Audit Trail Recorded</small>
             </div>
           </div>
@@ -389,7 +416,7 @@ export default function LiveRecoveryCard({ transaction, auditLogs = [], verified
             <div className="modal-grid">
               <div className="modal-stat">
                 <span>Transaction</span>
-                <strong>{transaction?.transaction_id || 'TXN005'}</strong>
+                <strong>{transaction.transaction_id}</strong>
               </div>
               <div className="modal-stat">
                 <span>Payment Link ID</span>

@@ -2134,6 +2134,134 @@ th {
   to { transform: rotate(360deg); }
 }
 
+.agent-trace-panel {
+  padding: 22px;
+  border: 1px solid rgba(103, 232, 249, 0.16);
+  background: linear-gradient(135deg, rgba(10, 22, 34, 0.94), rgba(12, 24, 30, 0.86));
+}
+
+.trace-header p {
+  margin: 7px 0 0;
+  color: #a9bfd4;
+  font-size: 0.88rem;
+}
+
+.trace-shield {
+  color: #6ee7b7;
+}
+
+.trace-steps {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 20px;
+}
+
+.trace-step-wrap {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.trace-step {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  color: #8fa6bd;
+}
+
+.trace-step.complete {
+  color: #e5fff3;
+}
+
+.trace-step-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 26px;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+}
+
+.trace-step.complete .trace-step-icon {
+  border-color: rgba(52, 211, 153, 0.35);
+  background: rgba(52, 211, 153, 0.14);
+  color: #9ae6b4;
+}
+
+.trace-step strong,
+.trace-step small {
+  display: block;
+  white-space: nowrap;
+}
+
+.trace-step strong {
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+}
+
+.trace-step small {
+  margin-top: 3px;
+  color: #90a8c0;
+  font-size: 0.68rem;
+}
+
+.trace-connector {
+  height: 1px;
+  flex: 1;
+  margin: 0 8px;
+  background: rgba(148, 163, 184, 0.2);
+}
+
+.trace-connector.complete {
+  background: rgba(52, 211, 153, 0.5);
+}
+
+.trace-details {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 20px;
+}
+
+.trace-detail-block {
+  min-width: 0;
+  padding: 13px;
+  border: 1px solid rgba(148, 163, 184, 0.12);
+  border-radius: 12px;
+  background: rgba(7, 15, 25, 0.54);
+}
+
+.trace-detail-block span,
+.trace-detail-block small {
+  display: block;
+}
+
+.trace-detail-block span {
+  color: #67e8f9;
+  font-size: 0.68rem;
+  letter-spacing: 0.1em;
+}
+
+.trace-detail-block strong {
+  display: block;
+  margin-top: 7px;
+  color: #effaff;
+  text-transform: capitalize;
+}
+
+.trace-detail-block small {
+  margin-top: 5px;
+  overflow: hidden;
+  color: #9db4ca;
+  font-size: 0.76rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 @media (max-width: 1100px) {
   .hero-layout,
   .insight-grid,
@@ -2146,6 +2274,11 @@ th {
   }
 
   .decision-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .trace-steps,
+  .trace-details {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
@@ -2167,6 +2300,8 @@ th {
   .brand-badge { width: 100%; justify-content: center; }
   .filters { grid-template-columns: 1fr; }
   .section-header-row { flex-direction: column; align-items: flex-start; }
+  .trace-steps,
+  .trace-details { grid-template-columns: 1fr; }
   .impact-grid,
   .decision-grid,
   .health-grid { grid-template-columns: 1fr; }

@@ -21,6 +21,7 @@ import Header from './components/Header'
 import HeroStatus from './components/HeroStatus'
 import RevenueImpact from './components/RevenueImpact'
 import LiveRecoveryCard from './components/LiveRecoveryCard'
+import AgentDecisionTrace from './components/AgentDecisionTrace'
 import AgentDecisionCenter from './components/AgentDecisionCenter'
 import RecoveryBreakdownChart from './components/RecoveryBreakdownChart'
 import OutcomeBreakdownChart from './components/OutcomeBreakdownChart'
@@ -48,6 +49,7 @@ function App() {
   const [transactions, setTransactions] = useState([])
   const [liveTransaction, setLiveTransaction] = useState(null)
   const [auditLogs, setAuditLogs] = useState([])
+  const [agentTrace, setAgentTrace] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [selectedRow, setSelectedRow] = useState(null)
@@ -73,20 +75,41 @@ function App() {
       setLoading(true)
       setError('')
 
-      const [metricsData, recoveryData, outcomeData, batchTransactionsData, liveRecoveryData] = await Promise.all([
+      const [metricsData, recoveryData, outcomeData, batchTransactionsData, allTransactions] = await Promise.all([
         fetchJson('/api/dashboard/metrics'),
         fetchJson('/api/dashboard/recovery-breakdown'),
         fetchJson('/api/dashboard/outcome-breakdown'),
         fetchJson('/api/batch/transactions'),
-        fetchJson('/api/live-recovery/TXN005'),
+        fetchJson('/api/transactions'),
       ])
+
+      const eligibleTransactions = (allTransactions || [])
+        .filter((item) => (
+          Number(item?.is_synthetic) === 0
+          && String(item?.status || '').toLowerCase() === 'recovered'
+          && String(item?.recovery_status || '').toLowerCase() === 'successful'
+          && Number(item?.recovered_amount || 0) > 0
+          && Boolean(item?.payment_link_id)
+          && Boolean(item?.razorpay_reference_id)
+        ))
+        .sort((first, second) => new Date(second?.recovered_at || 0).getTime() - new Date(first?.recovered_at || 0).getTime())
+
+      const latestCandidate = eligibleTransactions[0]
+      const latestAudit = latestCandidate
+        ? await fetchJson(`/api/audit/${encodeURIComponent(latestCandidate.transaction_id)}`)
+        : []
+      const hasRevenueRecoveredAudit = (latestAudit || []).some((item) => item?.action === 'revenue_recovered')
+      const latestTrace = hasRevenueRecoveredAudit
+        ? await fetchJson(`/api/agent/trace/${encodeURIComponent(latestCandidate.transaction_id)}`)
+        : null
 
       setMetrics(metricsData)
       setRecoveryBreakdown(recoveryData?.breakdown || {})
       setOutcomeBreakdown(outcomeData || {})
       setTransactions(batchTransactionsData?.transactions || [])
-      setLiveTransaction(liveRecoveryData?.transaction || null)
-      setAuditLogs(liveRecoveryData?.audit || [])
+      setLiveTransaction(hasRevenueRecoveredAudit ? latestCandidate : null)
+      setAuditLogs(hasRevenueRecoveredAudit ? latestAudit : [])
+      setAgentTrace(latestTrace)
     } catch (err) {
       setError(err?.response?.data?.error || err?.message || 'Unable to reach RecoverAI backend')
     } finally {
@@ -183,7 +206,7 @@ function App() {
   const commandItems = useMemo(() => {
     const query = commandQuery.trim().toLowerCase()
     const items = [
-      { label: 'View Live Recovery', description: 'Open TXN005 proof flow', action: 'live' },
+      { label: 'View Live Recovery', description: 'Open verified Razorpay proof flow', action: 'live' },
       { label: 'Open Human Review Queue', description: 'Review gated transactions', action: 'human' },
       { label: 'Show High Value Transactions', description: 'Top 10 revenue risk cases', action: 'highvalue' },
       { label: 'Jump to Recovery Analytics', description: 'Go to charts and outcomes', action: 'analytics' },
@@ -313,8 +336,8 @@ function App() {
       body: 'The action mix shows where retries, links, and human reviews are triggered based on policy thresholds.',
     },
     {
-      title: 'Live Razorpay TXN005 Recovery',
-      body: 'TXN005 demonstrates the real recovery journey: failed payment, decisioning, payment link, and webhook-signed recovery.',
+      title: 'Live Razorpay Recovery',
+      body: 'The latest verified live transaction demonstrates the real recovery journey: failed payment, decisioning, payment link, and webhook-signed recovery.',
     },
     {
       title: 'Signed Webhook + Audit Proof',
@@ -402,9 +425,13 @@ function App() {
           <LiveRecoveryCard
             transaction={liveTransaction}
             auditLogs={auditLogs}
-            verified={Boolean(liveTransaction && liveTransaction.status === 'recovered' && Number(liveTransaction.recovered_amount || 0) > 0 && auditLogs.some((item) => String(item?.action || '').toLowerCase() === 'revenue_recovered'))}
+            verified={Boolean(liveTransaction && liveTransaction.status === 'recovered' && liveTransaction.recovery_status === 'successful' && Number(liveTransaction.recovered_amount || 0) > 0 && auditLogs.some((item) => item?.action === 'revenue_recovered'))}
             onOpen={() => setOpenLiveProof(true)}
           />
+        </section>
+
+        <section className="section-block">
+          <AgentDecisionTrace trace={agentTrace} />
         </section>
 
         <AgentDecisionCenter breakdown={recoveryBreakdown} onOpenHumanReview={() => setOpenHumanReview(true)} />
@@ -472,16 +499,19 @@ function App() {
 
             <div className="proof-grid">
               <div className="proof-card">
-                <div className="proof-row"><span>TXN005</span><strong>{liveTransaction?.transaction_id || 'TXN005'}</strong></div>
-                <div className="proof-row"><span>Amount</span><strong>₹{Number(liveTransaction?.amount || 3499).toLocaleString('en-IN')}</strong></div>
-                <div className="proof-row"><span>Failure Reason</span><strong>{liveTransaction?.failure_reason || 'Bank Decline'}</strong></div>
-                <div className="proof-row"><span>Recovery Action</span><strong>{liveTransaction?.recovery_action || 'Payment Link'}</strong></div>
-                <div className="proof-row"><span>Status</span><strong className="status-good">{liveTransaction?.status || 'RECOVERED'}</strong></div>
+                <div className="proof-row"><span>Transaction ID</span><strong>{liveTransaction?.transaction_id || 'Not available'}</strong></div>
+                <div className="proof-row"><span>Original Amount</span><strong>₹{Number(liveTransaction?.amount || 0).toLocaleString('en-IN')}</strong></div>
+                <div className="proof-row"><span>Failure Reason</span><strong>{liveTransaction?.failure_reason || 'Not available'}</strong></div>
+                <div className="proof-row"><span>Agent Decision</span><strong>{liveTransaction?.recovery_action || 'Not available'}</strong></div>
+                <div className="proof-row"><span>Recovered Amount</span><strong>₹{Number(liveTransaction?.recovered_amount || 0).toLocaleString('en-IN')}</strong></div>
+                <div className="proof-row"><span>Recovered At</span><strong>{liveTransaction?.recovered_at ? new Date(liveTransaction.recovered_at).toLocaleString('en-IN') : 'Not available'}</strong></div>
+                <div className="proof-row"><span>Payment Link ID</span><strong>{liveTransaction?.payment_link_id || 'Not available'}</strong></div>
+                <div className="proof-row"><span>Reference ID</span><strong>{liveTransaction?.razorpay_reference_id || 'Not available'}</strong></div>
               </div>
 
               <div className="proof-journey" aria-label="Recovery journey timeline">
                 {ORDERED_STAGES.map((stage, index) => {
-                  const done = index < ORDERED_STAGES.indexOf('Revenue Recovered') || (stage === 'Revenue Recovered' && (auditLogs.some((item) => /revenue_recovered|recovered/i.test(item.action || item.reason || '')) || (liveTransaction?.status || '').toLowerCase() === 'recovered'))
+                  const done = index < ORDERED_STAGES.indexOf('Revenue Recovered') || (stage === 'Revenue Recovered' && auditLogs.some((item) => item?.action === 'revenue_recovered'))
                   return (
                     <div key={stage} className={`journey-step ${done ? 'done' : ''}`}>
                       <span className="journey-icon">{done ? <Check size={14} /> : <ArrowUpRight size={14} />}</span>
@@ -492,7 +522,7 @@ function App() {
               </div>
             </div>
 
-            {(auditLogs.some((item) => /revenue_recovered|recovered/i.test(item.action || item.reason || '')) || (liveTransaction?.status || '').toLowerCase() === 'recovered') && (
+            {auditLogs.some((item) => item?.action === 'revenue_recovered') && (
               <div className="verified-badge">
                 <ShieldCheck size={16} />
                 <span>Signed Webhook Verified</span>

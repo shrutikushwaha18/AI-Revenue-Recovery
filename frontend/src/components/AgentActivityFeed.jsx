@@ -4,7 +4,7 @@ export default function AgentActivityFeed({ transactions = [], auditLogs = [] })
   const items = [
     ...auditLogs.slice(0, 3).map((row) => ({
       id: `audit-${row.id || row.action}`,
-      title: row.transaction_id || 'TXN005',
+      title: row.transaction_id || 'Unknown transaction',
       description: row.reason || 'System activity',
       meta: `${row.action}`,
     })),

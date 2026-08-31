@@ -1,4 +1,4 @@
-from database import get_db, init_db
+from database import DB_PATH, get_db, init_db
 
 TRANSACTIONS = [
     (
@@ -56,6 +56,7 @@ TRANSACTIONS = [
 
 def seed_db():
     init_db()
+    print("SQLite DB path:", DB_PATH)
     conn = get_db()
 
     for transaction in TRANSACTIONS:
@@ -76,7 +77,9 @@ def seed_db():
         )
 
     conn.commit()
+    transaction_count = conn.execute("SELECT COUNT(*) FROM transactions").fetchone()[0]
     conn.close()
+    print("Startup transaction count:", transaction_count)
     print("Synthetic transactions seeded if missing.")
 
 

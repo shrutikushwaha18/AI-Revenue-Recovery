@@ -47,9 +47,12 @@ function App() {
   const [recoveryBreakdown, setRecoveryBreakdown] = useState({})
   const [outcomeBreakdown, setOutcomeBreakdown] = useState({})
   const [transactions, setTransactions] = useState([])
-  const [liveTransaction, setLiveTransaction] = useState(null)
+  const [verifiedLiveRecoveryTransaction, setVerifiedLiveRecoveryTransaction] = useState(null)
   const [auditLogs, setAuditLogs] = useState([])
   const [agentTrace, setAgentTrace] = useState(null)
+  const [agentTraceTransaction, setAgentTraceTransaction] = useState(null)
+  const [agentTraceLoading, setAgentTraceLoading] = useState(true)
+  const [agentTraceError, setAgentTraceError] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [selectedRow, setSelectedRow] = useState(null)
@@ -73,6 +76,8 @@ function App() {
   const loadDashboard = async () => {
     try {
       setLoading(true)
+      setAgentTraceLoading(true)
+      setAgentTraceError(false)
       setError('')
 
       const [metricsData, recoveryData, outcomeData, batchTransactionsData, allTransactions] = await Promise.all([
@@ -83,7 +88,15 @@ function App() {
         fetchJson('/api/transactions'),
       ])
 
-      const eligibleTransactions = (allTransactions || [])
+      const nonSyntheticTransactions = (allTransactions || [])
+        .filter((item) => Number(item?.is_synthetic) === 0)
+        .sort((first, second) => {
+          const secondDate = new Date(second?.updated_at || second?.created_at || 0).getTime()
+          const firstDate = new Date(first?.updated_at || first?.created_at || 0).getTime()
+          return secondDate - firstDate
+        })
+
+      const verifiedTransactions = (allTransactions || [])
         .filter((item) => (
           Number(item?.is_synthetic) === 0
           && String(item?.status || '').toLowerCase() === 'recovered'
@@ -94,26 +107,36 @@ function App() {
         ))
         .sort((first, second) => new Date(second?.recovered_at || 0).getTime() - new Date(first?.recovered_at || 0).getTime())
 
-      const latestCandidate = eligibleTransactions[0]
-      const latestAudit = latestCandidate
-        ? await fetchJson(`/api/audit/${encodeURIComponent(latestCandidate.transaction_id)}`)
+      const latestAgentTransaction = nonSyntheticTransactions[0]
+      const latestVerifiedTransaction = verifiedTransactions[0]
+      const latestAudit = latestVerifiedTransaction
+        ? await fetchJson(`/api/audit/${encodeURIComponent(latestVerifiedTransaction.transaction_id)}`)
         : []
       const hasRevenueRecoveredAudit = (latestAudit || []).some((item) => item?.action === 'revenue_recovered')
-      const latestTrace = hasRevenueRecoveredAudit
-        ? await fetchJson(`/api/agent/trace/${encodeURIComponent(latestCandidate.transaction_id)}`)
-        : null
+      let latestTrace = null
+      let traceError = false
+      if (latestAgentTransaction) {
+        try {
+          latestTrace = await fetchJson(`/api/agent/trace/${encodeURIComponent(latestAgentTransaction.transaction_id)}`)
+        } catch {
+          traceError = true
+        }
+      }
 
       setMetrics(metricsData)
       setRecoveryBreakdown(recoveryData?.breakdown || {})
       setOutcomeBreakdown(outcomeData || {})
       setTransactions(batchTransactionsData?.transactions || [])
-      setLiveTransaction(hasRevenueRecoveredAudit ? latestCandidate : null)
+      setVerifiedLiveRecoveryTransaction(hasRevenueRecoveredAudit ? latestVerifiedTransaction : null)
       setAuditLogs(hasRevenueRecoveredAudit ? latestAudit : [])
+      setAgentTraceTransaction(latestAgentTransaction || null)
       setAgentTrace(latestTrace)
+      setAgentTraceError(traceError || !latestAgentTransaction)
     } catch (err) {
       setError(err?.response?.data?.error || err?.message || 'Unable to reach RecoverAI backend')
     } finally {
       setLoading(false)
+      setAgentTraceLoading(false)
     }
   }
 
@@ -423,15 +446,15 @@ function App() {
 
         <section className="section-block">
           <LiveRecoveryCard
-            transaction={liveTransaction}
+            transaction={verifiedLiveRecoveryTransaction}
             auditLogs={auditLogs}
-            verified={Boolean(liveTransaction && liveTransaction.status === 'recovered' && liveTransaction.recovery_status === 'successful' && Number(liveTransaction.recovered_amount || 0) > 0 && auditLogs.some((item) => item?.action === 'revenue_recovered'))}
+            verified={Boolean(verifiedLiveRecoveryTransaction && verifiedLiveRecoveryTransaction.status === 'recovered' && verifiedLiveRecoveryTransaction.recovery_status === 'successful' && Number(verifiedLiveRecoveryTransaction.recovered_amount || 0) > 0 && auditLogs.some((item) => item?.action === 'revenue_recovered'))}
             onOpen={() => setOpenLiveProof(true)}
           />
         </section>
 
         <section className="section-block">
-          <AgentDecisionTrace trace={agentTrace} />
+          <AgentDecisionTrace trace={agentTrace} transaction={agentTraceTransaction} loading={agentTraceLoading} error={agentTraceError} />
         </section>
 
         <AgentDecisionCenter breakdown={recoveryBreakdown} onOpenHumanReview={() => setOpenHumanReview(true)} />
@@ -499,14 +522,14 @@ function App() {
 
             <div className="proof-grid">
               <div className="proof-card">
-                <div className="proof-row"><span>Transaction ID</span><strong>{liveTransaction?.transaction_id || 'Not available'}</strong></div>
-                <div className="proof-row"><span>Original Amount</span><strong>₹{Number(liveTransaction?.amount || 0).toLocaleString('en-IN')}</strong></div>
-                <div className="proof-row"><span>Failure Reason</span><strong>{liveTransaction?.failure_reason || 'Not available'}</strong></div>
-                <div className="proof-row"><span>Agent Decision</span><strong>{liveTransaction?.recovery_action || 'Not available'}</strong></div>
-                <div className="proof-row"><span>Recovered Amount</span><strong>₹{Number(liveTransaction?.recovered_amount || 0).toLocaleString('en-IN')}</strong></div>
-                <div className="proof-row"><span>Recovered At</span><strong>{liveTransaction?.recovered_at ? new Date(liveTransaction.recovered_at).toLocaleString('en-IN') : 'Not available'}</strong></div>
-                <div className="proof-row"><span>Payment Link ID</span><strong>{liveTransaction?.payment_link_id || 'Not available'}</strong></div>
-                <div className="proof-row"><span>Reference ID</span><strong>{liveTransaction?.razorpay_reference_id || 'Not available'}</strong></div>
+                <div className="proof-row"><span>Transaction ID</span><strong>{verifiedLiveRecoveryTransaction?.transaction_id || 'Not available'}</strong></div>
+                <div className="proof-row"><span>Original Amount</span><strong>₹{Number(verifiedLiveRecoveryTransaction?.amount || 0).toLocaleString('en-IN')}</strong></div>
+                <div className="proof-row"><span>Failure Reason</span><strong>{verifiedLiveRecoveryTransaction?.failure_reason || 'Not available'}</strong></div>
+                <div className="proof-row"><span>Agent Decision</span><strong>{verifiedLiveRecoveryTransaction?.recovery_action || 'Not available'}</strong></div>
+                <div className="proof-row"><span>Recovered Amount</span><strong>₹{Number(verifiedLiveRecoveryTransaction?.recovered_amount || 0).toLocaleString('en-IN')}</strong></div>
+                <div className="proof-row"><span>Recovered At</span><strong>{verifiedLiveRecoveryTransaction?.recovered_at ? new Date(verifiedLiveRecoveryTransaction.recovered_at).toLocaleString('en-IN') : 'Not available'}</strong></div>
+                <div className="proof-row"><span>Payment Link ID</span><strong>{verifiedLiveRecoveryTransaction?.payment_link_id || 'Not available'}</strong></div>
+                <div className="proof-row"><span>Reference ID</span><strong>{verifiedLiveRecoveryTransaction?.razorpay_reference_id || 'Not available'}</strong></div>
               </div>
 
               <div className="proof-journey" aria-label="Recovery journey timeline">

@@ -10,27 +10,43 @@ const stages = [
 
 const formatAmount = (value) => `₹${Number(value || 0).toLocaleString('en-IN')}`
 
-export default function AgentDecisionTrace({ trace }) {
-  if (!trace) {
+export default function AgentDecisionTrace({ trace, transaction, loading = false, error = false }) {
+  if (loading) {
     return (
       <section className="agent-trace-panel panel">
         <div className="panel-header">
           <div>
             <span className="eyebrow">AI AGENT DECISION TRACE</span>
-            <h3>Waiting for verified live recovery</h3>
+            <h3>Loading agent reasoning...</h3>
           </div>
         </div>
       </section>
     )
   }
 
-  const guardrailsPassed = trace.guardrails?.filter((check) => check.name !== 'execution_allowed').every((check) => check.passed)
+  if (error || !trace) {
+    return (
+      <section className="agent-trace-panel panel">
+        <div className="panel-header">
+          <div>
+            <span className="eyebrow">AI AGENT DECISION TRACE</span>
+            <h3>Agent trace unavailable</h3>
+          </div>
+        </div>
+      </section>
+    )
+  }
+
+  const guardrails = trace?.guardrails || []
+  const guardrailsPassed = guardrails.filter((check) => check.name !== 'execution_allowed').every((check) => check.passed)
+  const decision = trace?.decision
+  const hasDecision = Boolean(decision?.action)
   const stagesComplete = [
-    Boolean(trace.observation),
-    Boolean(trace.decision?.action),
+    Boolean(trace?.observation),
+    Boolean(trace?.decision?.action),
     guardrailsPassed,
-    Boolean(trace.execution?.executed),
-    Boolean(trace.outcome?.signed_webhook && trace.outcome?.recovered),
+    Boolean(trace?.execution?.executed),
+    Boolean(trace?.outcome?.signed_webhook && trace?.outcome?.recovered),
   ]
 
   return (
@@ -39,7 +55,7 @@ export default function AgentDecisionTrace({ trace }) {
         <div>
           <span className="eyebrow">AI AGENT DECISION TRACE</span>
           <h3>Autonomous recovery trace</h3>
-          <p>Razorpay Test Mode • {trace.transaction_id}</p>
+          <p>Razorpay Test Mode • {transaction?.transaction_id || trace?.transaction_id}</p>
         </div>
         <ShieldCheck size={22} className="trace-shield" />
       </div>
@@ -61,24 +77,47 @@ export default function AgentDecisionTrace({ trace }) {
 
       <div className="trace-details">
         <div className="trace-detail-block">
-          <span>OBSERVATION</span>
-          <strong>{trace.observation.failure_reason?.replace(/_/g, ' ') || 'Unknown failure'}</strong>
-          <small>{formatAmount(trace.observation.amount)} at risk • {trace.observation.retry_count || 0} retries</small>
+          <span>OBSERVE</span>
+          <strong>{trace?.observation?.transaction_id || transaction?.transaction_id || 'Unavailable'}</strong>
+          <small>{formatAmount(trace?.observation?.amount)} • {trace?.observation?.failure_reason?.replace(/_/g, ' ') || 'Unknown failure'} • {trace?.observation?.retry_count || 0} retries • {trace?.observation?.status || 'Unavailable'}</small>
         </div>
         <div className="trace-detail-block">
           <span>DECISION</span>
-          <strong>{trace.decision.action?.replace(/_/g, ' ')}</strong>
-          <small>{trace.decision.reason}</small>
+          {hasDecision ? (
+            <>
+              <strong>{decision?.action?.replace(/_/g, ' ')}</strong>
+              <small>Confidence: {typeof decision?.confidence === 'number' ? `${decision.confidence * 100}%` : 'Unavailable'}</small>
+              <small>Confidence Type: {decision?.confidence_type || 'Unavailable'}</small>
+              <small>Risk Level: {decision?.risk_level || 'Unavailable'}</small>
+              <small>Reason: {decision?.reason || 'Unavailable'}</small>
+              <small>Human Review: {decision?.requires_human_review ? 'Required' : 'Not Required'}</small>
+            </>
+          ) : (
+            <strong>Decision data unavailable</strong>
+          )}
         </div>
         <div className="trace-detail-block">
           <span>POLICY GUARD</span>
           <strong>{guardrailsPassed ? 'Policy checks passed' : 'Execution blocked by policy'}</strong>
-          <small>{trace.guardrails?.filter((check) => check.passed).length || 0}/{trace.guardrails?.length || 0} checks passed</small>
+          <small>{guardrails.filter((check) => check.passed).length}/{guardrails.length} checks passed</small>
+          <div className="trace-guardrail-list">
+            {guardrails.map((check) => (
+              <small key={check.name}>{check.passed ? 'PASSED' : 'BLOCKED'}: {check.name} • {check.reason}</small>
+            ))}
+          </div>
         </div>
         <div className="trace-detail-block">
-          <span>OUTCOME</span>
-          <strong>{formatAmount(trace.outcome.recovered_amount)} recovered</strong>
-          <small>{trace.outcome.signed_webhook ? 'Signed webhook' : 'Awaiting signed webhook'}</small>
+          <span>ACT</span>
+          <strong>{trace?.execution?.executed ? 'Executed' : 'Awaiting execution / recovery outcome'}</strong>
+          <small>Action: {trace?.execution?.action || 'Unavailable'}</small>
+          <small>Tool: {trace?.execution?.external_tool || 'No external action'}</small>
+          <small>Payment Link Created: {trace?.execution?.payment_link_created ? 'Yes' : 'No'}</small>
+        </div>
+        <div className="trace-detail-block">
+          <span>VERIFY</span>
+          <strong>{trace?.outcome?.recovered ? `${formatAmount(trace?.outcome?.recovered_amount)} recovered` : 'Awaiting execution / recovery outcome'}</strong>
+          <small>Status: {trace?.outcome?.status || 'Unavailable'} • Recovered: {trace?.outcome?.recovered ? 'Yes' : 'No'}</small>
+          <small>Signed Webhook: {trace?.outcome?.signed_webhook ? 'Yes' : 'No'}</small>
         </div>
       </div>
     </section>

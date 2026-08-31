@@ -51,6 +51,16 @@ TRANSACTIONS = [
         "bank_decline",
         "pending",
     ),
+    (
+        "TXN006",
+        "Riya Verma",
+        "riya@example.com",
+        "9876543215",
+        1999,
+        "failed",
+        "bank_decline",
+        "pending",
+    ),
 ]
 
 

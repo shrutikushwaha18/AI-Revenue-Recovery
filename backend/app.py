@@ -266,6 +266,16 @@ def recover_transaction(transaction_id):
     transaction = dict(row)
     decision = decide_recovery_action(transaction)
 
+    if int(transaction.get("is_synthetic") or 0) == 1 or str(transaction_id).startswith("BATCH"):
+        conn.close()
+        return jsonify(
+            {
+                "executed": False,
+                "reason": "Synthetic batch transactions cannot trigger real Razorpay actions",
+                "decision": decision,
+            }
+        )
+
     if decision["action"] not in ["payment_link", "payment_link_later"]:
         conn.close()
         return jsonify({"decision": decision, "executed": False})
@@ -288,6 +298,12 @@ def recover_transaction(transaction_id):
         response = create_payment_link(transaction, reference_id=reference_id)
         short_url = response.get("short_url") or response.get("url") or "not_available"
         payment_link_id = response.get("id") or None
+        metadata = {
+            "failure_reason": str(transaction.get("failure_reason") or "unknown"),
+            "recovery_action": str(transaction.get("recovery_action") or decision.get("action") or "payment_link"),
+            "workflow": "revenue_recovery",
+            "source": "RecoverAI",
+        }
 
         conn.execute(
             """
@@ -296,23 +312,42 @@ def recover_transaction(transaction_id):
                 payment_link_id = ?,
                 razorpay_reference_id = ?,
                 recovery_status = ?,
+                recovery_action = COALESCE(recovery_action, ?),
                 updated_at = CURRENT_TIMESTAMP
             WHERE transaction_id = ?
             """,
-            (short_url, payment_link_id, reference_id, "recovery_started", transaction_id),
-        )
-
-        conn.execute(
-            """
-            INSERT INTO audit_logs (transaction_id, action, reason)
-            VALUES (?, ?, ?)
-            """,
             (
+                short_url,
+                payment_link_id,
+                reference_id,
+                "recovery_started",
+                str(decision.get("action") or "payment_link"),
                 transaction_id,
-                "payment_link_created",
-                "Razorpay recovery payment link generated",
             ),
         )
+
+        audit_exists = conn.execute(
+            """
+            SELECT 1
+            FROM audit_logs
+            WHERE transaction_id = ? AND action = 'payment_link_created'
+            LIMIT 1
+            """,
+            (transaction_id,),
+        ).fetchone()
+
+        if audit_exists is None:
+            conn.execute(
+                """
+                INSERT INTO audit_logs (transaction_id, action, reason)
+                VALUES (?, ?, ?)
+                """,
+                (
+                    transaction_id,
+                    "payment_link_created",
+                    "Razorpay recovery payment link generated with RecoverAI metadata",
+                ),
+            )
 
         conn.commit()
         conn.close()
@@ -325,6 +360,7 @@ def recover_transaction(transaction_id):
                 "payment_link_id": payment_link_id,
                 "razorpay_reference_id": reference_id,
                 "decision": decision,
+                "metadata_sent_to_razorpay": metadata,
             }
         )
 

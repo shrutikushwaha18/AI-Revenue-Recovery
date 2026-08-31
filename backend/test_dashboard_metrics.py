@@ -215,3 +215,71 @@ def test_batch_reset_and_analyze_are_reproducible_and_idempotent():
 
         batch_audit_after_repeat = client.get('/api/audit/BATCH001').get_json()
         assert len(batch_audit_after_repeat) == 1
+
+
+def test_live_recovery_creates_razorpay_metadata_and_blocks_synthetic_transactions(monkeypatch):
+    def fake_create_payment_link(transaction, reference_id=None):
+        return {
+            "id": "plink_123456",
+            "short_url": "https://rzp.io/i/recoverai-demo",
+            "reference_id": reference_id,
+        }
+
+    monkeypatch.setattr("app.create_payment_link", fake_create_payment_link)
+
+    with app.test_client() as client:
+        conn = get_db()
+        conn.execute(
+            "UPDATE transactions SET recovery_status = 'pending', recovery_action = NULL, payment_link = NULL, payment_link_id = NULL, razorpay_reference_id = NULL WHERE transaction_id = 'TXN005'"
+        )
+        conn.execute("DELETE FROM audit_logs WHERE transaction_id = 'TXN005'")
+        conn.commit()
+
+        response = client.post('/api/recover/TXN005')
+        assert response.status_code == 200
+        payload = response.get_json()
+        assert payload["success"] is True
+        assert payload["transaction_id"] == "TXN005"
+        assert payload["razorpay_reference_id"].startswith("REC_TXN005_")
+        assert payload["metadata_sent_to_razorpay"]["failure_reason"] == "bank_decline"
+        assert payload["metadata_sent_to_razorpay"]["workflow"] == "revenue_recovery"
+        assert payload["metadata_sent_to_razorpay"]["source"] == "RecoverAI"
+
+        tx = conn.execute(
+            "SELECT recovery_status, recovery_action, razorpay_reference_id, payment_link_id FROM transactions WHERE transaction_id = 'TXN005'"
+        ).fetchone()
+        assert tx["recovery_status"] == "recovery_started"
+        assert tx["recovery_action"] == "payment_link"
+        assert tx["razorpay_reference_id"].startswith("REC_TXN005_")
+        assert tx["payment_link_id"] == "plink_123456"
+
+        audit_rows = conn.execute(
+            "SELECT action, reason FROM audit_logs WHERE transaction_id = 'TXN005' ORDER BY created_at ASC"
+        ).fetchall()
+        assert [row["action"] for row in audit_rows] == ["payment_link_created"]
+        assert audit_rows[0]["reason"] == "Razorpay recovery payment link generated with RecoverAI metadata"
+
+        second_response = client.post('/api/recover/TXN005')
+        assert second_response.status_code == 200
+        second_payload = second_response.get_json()
+        assert second_payload["reused_existing_payment_link"] is True
+
+        audit_rows_after_second = conn.execute(
+            "SELECT COUNT(*) FROM audit_logs WHERE transaction_id = 'TXN005' AND action = 'payment_link_created'"
+        ).fetchone()[0]
+        assert audit_rows_after_second == 1
+
+        batch_row = conn.execute(
+            "SELECT * FROM transactions WHERE transaction_id = 'BATCH001'"
+        ).fetchone()
+        if batch_row is not None:
+            conn.execute("UPDATE transactions SET is_synthetic = 1 WHERE transaction_id = 'BATCH001'")
+            conn.commit()
+
+        synthetic_response = client.post('/api/recover/BATCH001')
+        assert synthetic_response.status_code == 200
+        synthetic_payload = synthetic_response.get_json()
+        assert synthetic_payload["executed"] is False
+        assert synthetic_payload["reason"] == "Synthetic batch transactions cannot trigger real Razorpay actions"
+
+        conn.close()

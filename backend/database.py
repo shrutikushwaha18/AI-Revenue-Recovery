@@ -11,6 +11,23 @@ def get_db():
     return conn
 
 
+def get_transaction_by_id(transaction_id):
+    normalized = (transaction_id or "").strip()
+    print(f"[DEBUG] database path={DB_PATH}")
+    print(f"[DEBUG] repr(transaction_id)={repr(transaction_id)}")
+
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT * FROM transactions WHERE transaction_id = ?",
+            (normalized,),
+        ).fetchone()
+        print(f"[DEBUG] transaction_found={row is not None}")
+        return row
+    finally:
+        conn.close()
+
+
 def init_db():
     conn = get_db()
 

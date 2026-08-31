@@ -1,5 +1,6 @@
 import hashlib
 import hmac
+import json
 import os
 import random
 
@@ -11,7 +12,7 @@ SIMULATION_SEED = "recoverai-v1"
 SIMULATION_VERSION = "1.0"
 SIMULATION_KEY_VERSION = "v1"
 
-from database import get_db, init_db
+from database import get_db, get_transaction_by_id, init_db
 from razorpay_service import create_payment_link, generate_reference_id
 from recovery_agent import decide_recovery_action
 from seed import seed_db
@@ -222,41 +223,54 @@ def transactions():
 
 @app.route("/api/analyze/<transaction_id>", methods=["POST"])
 def analyze_transaction(transaction_id):
-    conn = get_db()
-    transaction = conn.execute(
-        "SELECT * FROM transactions WHERE transaction_id = ?",
-        (transaction_id,),
-    ).fetchone()
+    normalized_transaction_id = (transaction_id or "").strip()
+    transaction = get_transaction_by_id(normalized_transaction_id)
 
     if not transaction:
-        conn.close()
         return jsonify({"error": "Transaction not found"}), 404
 
     transaction = dict(transaction)
     decision = decide_recovery_action(transaction)
 
-    conn.execute(
-        "UPDATE transactions SET recovery_action = ? WHERE transaction_id = ?",
-        (decision["action"], transaction_id),
-    )
+    conn = get_db()
+    try:
+        conn.execute(
+            "UPDATE transactions SET recovery_action = ? WHERE transaction_id = ?",
+            (decision["action"], normalized_transaction_id),
+        )
 
-    conn.execute(
-        "INSERT INTO audit_logs (transaction_id, action, reason) VALUES (?, ?, ?)",
-        (transaction_id, decision["action"], decision["reason"]),
-    )
+        existing_audit = conn.execute(
+            """
+            SELECT 1
+            FROM audit_logs
+            WHERE transaction_id = ?
+              AND action = ?
+              AND reason = ?
+            LIMIT 1
+            """,
+            (normalized_transaction_id, decision["action"], decision["reason"]),
+        ).fetchone()
 
-    conn.commit()
-    conn.close()
+        if existing_audit is None:
+            conn.execute(
+                "INSERT INTO audit_logs (transaction_id, action, reason) VALUES (?, ?, ?)",
+                (normalized_transaction_id, decision["action"], decision["reason"]),
+            )
 
-    return jsonify({"transaction": transaction_id, "decision": decision})
+        conn.commit()
+    finally:
+        conn.close()
+
+    return jsonify({"transaction": normalized_transaction_id, "decision": decision})
 
 
 @app.route("/api/recover/<transaction_id>", methods=["POST"])
 def recover_transaction(transaction_id):
+    normalized_transaction_id = (transaction_id or "").strip()
     conn = get_db()
     row = conn.execute(
         "SELECT * FROM transactions WHERE transaction_id = ?",
-        (transaction_id,),
+        (normalized_transaction_id,),
     ).fetchone()
 
     if not row:
@@ -266,13 +280,27 @@ def recover_transaction(transaction_id):
     transaction = dict(row)
     decision = decide_recovery_action(transaction)
 
-    if int(transaction.get("is_synthetic") or 0) == 1 or str(transaction_id).startswith("BATCH"):
+    if int(transaction.get("is_synthetic") or 0) == 1:
         conn.close()
         return jsonify(
             {
+                "success": False,
                 "executed": False,
-                "reason": "Synthetic batch transactions cannot trigger real Razorpay actions",
+                "reason": "Synthetic transactions cannot trigger Razorpay recovery",
                 "decision": decision,
+            }
+        )
+
+    if str(transaction.get("status") or "").lower() == "recovered" or str(transaction.get("recovery_status") or "").lower() == "successful":
+        recovered_amount = transaction.get("recovered_amount")
+        conn.close()
+        return jsonify(
+            {
+                "success": True,
+                "already_recovered": True,
+                "transaction_id": normalized_transaction_id,
+                "recovered_amount": recovered_amount,
+                "message": "Transaction already recovered",
             }
         )
 
@@ -281,20 +309,30 @@ def recover_transaction(transaction_id):
         return jsonify({"decision": decision, "executed": False})
 
     existing_payment_link = transaction.get("payment_link")
-    if transaction.get("recovery_status") == "recovery_started" and existing_payment_link:
+    existing_payment_link_id = transaction.get("payment_link_id")
+    existing_reference_id = transaction.get("razorpay_reference_id")
+    if (
+        transaction.get("recovery_status") == "recovery_started"
+        and existing_payment_link
+        and existing_payment_link_id
+    ):
         conn.close()
         return jsonify(
             {
                 "success": True,
-                "transaction_id": transaction_id,
+                "reused_existing_link": True,
+                "transaction_id": normalized_transaction_id,
                 "payment_link": existing_payment_link,
-                "reused_existing_payment_link": True,
+                "payment_link_id": existing_payment_link_id,
+                "razorpay_reference_id": existing_reference_id,
+                "recovery_status": transaction.get("recovery_status"),
+                "message": "Existing active recovery payment link returned",
                 "decision": decision,
             }
         )
 
     try:
-        reference_id = generate_reference_id(transaction_id)
+        reference_id = generate_reference_id(normalized_transaction_id)
         response = create_payment_link(transaction, reference_id=reference_id)
         short_url = response.get("short_url") or response.get("url") or "not_available"
         payment_link_id = response.get("id") or None
@@ -311,8 +349,9 @@ def recover_transaction(transaction_id):
             SET payment_link = ?,
                 payment_link_id = ?,
                 razorpay_reference_id = ?,
+                recovery_action = ?,
                 recovery_status = ?,
-                recovery_action = COALESCE(recovery_action, ?),
+                recovery_attempted = 1,
                 updated_at = CURRENT_TIMESTAMP
             WHERE transaction_id = ?
             """,
@@ -320,9 +359,9 @@ def recover_transaction(transaction_id):
                 short_url,
                 payment_link_id,
                 reference_id,
-                "recovery_started",
                 str(decision.get("action") or "payment_link"),
-                transaction_id,
+                "recovery_started",
+                normalized_transaction_id,
             ),
         )
 
@@ -333,7 +372,7 @@ def recover_transaction(transaction_id):
             WHERE transaction_id = ? AND action = 'payment_link_created'
             LIMIT 1
             """,
-            (transaction_id,),
+            (normalized_transaction_id,),
         ).fetchone()
 
         if audit_exists is None:
@@ -343,7 +382,7 @@ def recover_transaction(transaction_id):
                 VALUES (?, ?, ?)
                 """,
                 (
-                    transaction_id,
+                    normalized_transaction_id,
                     "payment_link_created",
                     "Razorpay recovery payment link generated with RecoverAI metadata",
                 ),
@@ -355,7 +394,7 @@ def recover_transaction(transaction_id):
         return jsonify(
             {
                 "success": True,
-                "transaction_id": transaction_id,
+                "transaction_id": normalized_transaction_id,
                 "payment_link": short_url,
                 "payment_link_id": payment_link_id,
                 "razorpay_reference_id": reference_id,
@@ -721,27 +760,56 @@ def batch_transactions():
 
 @app.route("/api/webhook/razorpay", methods=["POST"])
 def razorpay_webhook():
-    webhook_secret = os.getenv("RAZORPAY_WEBHOOK_SECRET", "")
-    signature = request.headers.get("X-Razorpay-Signature")
-    body = request.get_data()
+    raw_body = request.get_data()
+    received_signature = request.headers.get("X-Razorpay-Signature")
+    webhook_secret = os.getenv("RAZORPAY_WEBHOOK_SECRET")
 
-    if webhook_secret:
-        expected_signature = hmac.new(
-            webhook_secret.encode(), body, hashlib.sha256
-        ).hexdigest()
+    print("[WEBHOOK] endpoint reached")
+    print("[WEBHOOK] secret configured:", bool(webhook_secret))
+    print("[WEBHOOK] signature header present:", bool(received_signature))
+    print("[WEBHOOK] raw body length:", len(raw_body))
 
-        if signature is None or not hmac.compare_digest(signature, expected_signature):
-            return jsonify({"error": "Invalid signature"}), 400
+    if not webhook_secret:
+        print("[WEBHOOK] webhook secret missing")
+        return jsonify({"error": "Webhook configuration error"}), 500
 
-    data = request.get_json(silent=True) or {}
-    event = data.get("event")
+    if not received_signature:
+        print("[WEBHOOK] signature header missing")
+        return jsonify({"error": "Missing signature"}), 400
 
-    if event == "payment_link.paid":
-        payment_link = data.get("payload", {}).get("payment_link", {}).get("entity", {})
-        reference_id = payment_link.get("reference_id", "")
-        transaction_id = reference_id.replace("REC_", "", 1).split("_", 1)[0]
+    expected_signature = hmac.new(
+        webhook_secret.encode("utf-8"),
+        raw_body,
+        hashlib.sha256,
+    ).hexdigest()
 
-        conn = get_db()
+    if not hmac.compare_digest(expected_signature, received_signature):
+        print("[WEBHOOK] signature mismatch")
+        return jsonify({"error": "Invalid signature"}), 400
+
+    print("[WEBHOOK] signature verified")
+
+    payload = json.loads(raw_body.decode("utf-8"))
+    event = payload.get("event")
+    print("[WEBHOOK] event:", event)
+
+    if event != "payment_link.paid":
+        return jsonify({"status": "ok"})
+
+    payment_link = payload.get("payload", {}).get("payment_link", {}).get("entity", {})
+    reference_id = payment_link.get("reference_id", "")
+    print("[WEBHOOK] reference:", reference_id)
+
+    parts = reference_id.split("_") if isinstance(reference_id, str) else []
+    transaction_id = None
+    if reference_id.startswith("REC_") and len(parts) >= 3:
+        transaction_id = parts[1]
+
+    print("[WEBHOOK] extracted transaction:", transaction_id)
+
+    conn = get_db()
+    row = None
+    if transaction_id:
         row = conn.execute(
             """
             SELECT transaction_id, amount, status, recovery_status, final_recovery_status,
@@ -752,60 +820,63 @@ def razorpay_webhook():
             (transaction_id,),
         ).fetchone()
 
-        if row is not None:
-            already_recovered = (
-                row["status"] == "recovered"
-                and row["recovery_status"] == "successful"
-                and row["final_recovery_status"] == "successful"
-                and int(row["recovery_attempted"] or 0) == 1
-                and int(row["recovery_success"] or 0) == 1
-                and float(row["recovered_amount"] or 0) > 0
+    print("[WEBHOOK] transaction found:", bool(row))
+
+    if row is not None:
+        already_recovered = (
+            row["status"] == "recovered"
+            and row["recovery_status"] == "successful"
+            and row["final_recovery_status"] == "successful"
+            and int(row["recovery_attempted"] or 0) == 1
+            and int(row["recovery_success"] or 0) == 1
+            and float(row["recovered_amount"] or 0) > 0
+        )
+
+        if not already_recovered:
+            conn.execute(
+                """
+                UPDATE transactions
+                SET status = 'recovered',
+                    recovery_status = 'successful',
+                    final_recovery_status = 'successful',
+                    recovery_attempted = 1,
+                    recovery_success = 1,
+                    recovered_amount = amount,
+                    recovered_at = CURRENT_TIMESTAMP,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE transaction_id = ?
+                """,
+                (transaction_id,),
             )
 
-            if not already_recovered:
+            audit_exists = conn.execute(
+                """
+                SELECT 1
+                FROM audit_logs
+                WHERE transaction_id = ? AND action = 'revenue_recovered'
+                LIMIT 1
+                """,
+                (transaction_id,),
+            ).fetchone()
+
+            if audit_exists is None:
                 conn.execute(
                     """
-                    UPDATE transactions
-                    SET status = 'recovered',
-                        recovery_status = 'successful',
-                        final_recovery_status = 'successful',
-                        recovery_attempted = 1,
-                        recovery_success = 1,
-                        recovered_amount = amount,
-                        recovered_at = CURRENT_TIMESTAMP,
-                        updated_at = CURRENT_TIMESTAMP
-                    WHERE transaction_id = ?
+                    INSERT INTO audit_logs (transaction_id, action, reason)
+                    VALUES (?, ?, ?)
                     """,
-                    (transaction_id,),
+                    (
+                        transaction_id,
+                        "revenue_recovered",
+                        "Payment Link successfully paid",
+                    ),
                 )
 
-                audit_exists = conn.execute(
-                    """
-                    SELECT 1
-                    FROM audit_logs
-                    WHERE transaction_id = ? AND action = 'revenue_recovered'
-                    LIMIT 1
-                    """,
-                    (transaction_id,),
-                ).fetchone()
+            print("[WEBHOOK] database recovery update completed")
 
-                if audit_exists is None:
-                    conn.execute(
-                        """
-                        INSERT INTO audit_logs (transaction_id, action, reason)
-                        VALUES (?, ?, ?)
-                        """,
-                        (
-                            transaction_id,
-                            "revenue_recovered",
-                            "Payment Link successfully paid",
-                        ),
-                    )
+        conn.commit()
 
-            conn.commit()
-
-        conn.close()
-
+    conn.close()
     return jsonify({"status": "ok"})
 
 

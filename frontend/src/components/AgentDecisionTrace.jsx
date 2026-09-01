@@ -48,6 +48,12 @@ export default function AgentDecisionTrace({ trace, transaction, loading = false
     Boolean(trace?.execution?.executed),
     Boolean(trace?.outcome?.signed_webhook && trace?.outcome?.recovered),
   ]
+  const reasoningSourceLabel = decision?.reasoning_source === 'llm' ? 'LLM' : 'Safe deterministic fallback'
+  const recommendedActionLabel = decision?.recommended_action?.replace(/_/g, ' ') || decision?.action?.replace(/_/g, ' ') || 'Unavailable'
+  const finalGuardedActionLabel = decision?.final_guarded_action?.replace(/_/g, ' ') || decision?.action?.replace(/_/g, ' ') || 'Unavailable'
+  const confidenceLabel = decision?.reasoning_source === 'llm'
+    ? 'LLM recommendation — not a probability'
+    : (typeof decision?.confidence === 'number' ? `${Math.round(decision.confidence * 100)}%` : 'Unavailable')
 
   return (
     <section className="agent-trace-panel panel">
@@ -85,12 +91,14 @@ export default function AgentDecisionTrace({ trace, transaction, loading = false
           <span>DECISION</span>
           {hasDecision ? (
             <>
-              <strong>{decision?.action?.replace(/_/g, ' ')}</strong>
-              <small>Confidence: {typeof decision?.confidence === 'number' ? `${decision.confidence * 100}%` : 'Unavailable'}</small>
-              <small>Confidence Type: {decision?.confidence_type || 'Unavailable'}</small>
+              <strong>AI Reasoner</strong>
+              <small>Recommended Action: {recommendedActionLabel}</small>
+              <small>Reasoning Source: {reasoningSourceLabel}</small>
               <small>Risk Level: {decision?.risk_level || 'Unavailable'}</small>
-              <small>Reason: {decision?.reason || 'Unavailable'}</small>
               <small>Human Review: {decision?.requires_human_review ? 'Required' : 'Not Required'}</small>
+              <small>Confidence: {confidenceLabel}</small>
+              <small>Confidence Type: {decision?.confidence_type || 'Unavailable'}</small>
+              <small>Reason: {decision?.reason || 'Unavailable'}</small>
             </>
           ) : (
             <strong>Decision data unavailable</strong>
@@ -98,8 +106,21 @@ export default function AgentDecisionTrace({ trace, transaction, loading = false
         </div>
         <div className="trace-detail-block">
           <span>POLICY GUARD</span>
-          <strong>{guardrailsPassed ? 'Policy checks passed' : 'Execution blocked by policy'}</strong>
-          <small>{guardrails.filter((check) => check.passed).length}/{guardrails.length} checks passed</small>
+          {decision?.policy_override === true ? (
+            <>
+              <strong>POLICY OVERRIDE</strong>
+              <small>LLM Recommendation: {recommendedActionLabel.charAt(0).toUpperCase() + recommendedActionLabel.slice(1)}</small>
+              <small>Final Guarded Action: {finalGuardedActionLabel.charAt(0).toUpperCase() + finalGuardedActionLabel.slice(1)}</small>
+              <small>Reason: {decision?.policy_override_reason || 'Unavailable'}</small>
+              <small>{decision?.guarded_reason || 'Unavailable'}</small>
+            </>
+          ) : (
+            <>
+              <strong>{guardrailsPassed ? 'Policy checks passed' : 'Execution blocked by policy'}</strong>
+              <small>{guardrails.filter((check) => check.passed).length}/{guardrails.length} checks passed</small>
+              <small>LLM recommendation approved by policy guard</small>
+            </>
+          )}
           <div className="trace-guardrail-list">
             {guardrails.map((check) => (
               <small key={check.name}>{check.passed ? 'PASSED' : 'BLOCKED'}: {check.name} • {check.reason}</small>
@@ -109,7 +130,7 @@ export default function AgentDecisionTrace({ trace, transaction, loading = false
         <div className="trace-detail-block">
           <span>ACT</span>
           <strong>{trace?.execution?.executed ? 'Executed' : 'Awaiting execution / recovery outcome'}</strong>
-          <small>Action: {trace?.execution?.action || 'Unavailable'}</small>
+          <small>Action: {decision?.final_guarded_action || trace?.execution?.action || 'Unavailable'}</small>
           <small>Tool: {trace?.execution?.external_tool || 'No external action'}</small>
           <small>Payment Link Created: {trace?.execution?.payment_link_created ? 'Yes' : 'No'}</small>
         </div>

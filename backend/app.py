@@ -14,7 +14,8 @@ SIMULATION_KEY_VERSION = "v1"
 
 from database import get_db, get_transaction_by_id, init_db
 from razorpay_service import create_payment_link, generate_reference_id
-from recovery_agent import decide_recovery_action, observe_transaction, policy_guard
+from llm_reasoner import reason_transaction
+from recovery_agent import apply_policy_override, decide_recovery_action, observe_transaction, policy_guard
 from seed import seed_db
 
 load_dotenv()
@@ -230,7 +231,7 @@ def analyze_transaction(transaction_id):
         return jsonify({"error": "Transaction not found"}), 404
 
     transaction = dict(transaction)
-    decision = decide_recovery_action(transaction)
+    decision = apply_policy_override(transaction, reason_transaction(transaction, decide_recovery_action(transaction)))
 
     conn = get_db()
     try:
@@ -290,16 +291,29 @@ def agent_trace(transaction_id):
         None,
     )
     revenue_recovered = any(item.get("action") == "revenue_recovered" for item in audit_logs)
-    decision = decide_recovery_action(transaction)
+    deterministic_decision = decide_recovery_action(transaction)
     if transaction.get("recovery_action") and revenue_recovered:
-        decision = {
+        recommended_decision = {
             "action": transaction.get("recovery_action"),
             "reason": payment_link_audit.get("reason") if payment_link_audit else "Previously recorded recovery decision",
             "confidence": None,
             "confidence_type": "historical decision record",
             "risk_level": "low",
             "requires_human_review": False,
+            "reasoning_source": "deterministic_fallback",
+            "recommended_action": transaction.get("recovery_action"),
         }
+    else:
+        recommended_decision = reason_transaction(transaction, deterministic_decision)
+
+    guarded_decision = apply_policy_override(transaction, recommended_decision, historical_execution=bool(payment_link_audit))
+    decision = {
+        **recommended_decision,
+        **guarded_decision,
+        "action": guarded_decision["action"],
+        "final_guarded_action": guarded_decision["action"],
+        "guarded_reason": guarded_decision["reason"],
+    }
 
     guardrails = policy_guard(transaction, decision, historical_execution=bool(payment_link_audit))
     execution = {
@@ -343,7 +357,9 @@ def recover_transaction(transaction_id):
         return jsonify({"error": "Transaction not found"}), 404
 
     transaction = dict(row)
-    decision = decide_recovery_action(transaction)
+    deterministic_decision = decide_recovery_action(transaction)
+    recommended_decision = reason_transaction(transaction, deterministic_decision)
+    decision = apply_policy_override(transaction, recommended_decision)
     guardrails = policy_guard(transaction, decision)
 
     if int(transaction.get("is_synthetic") or 0) == 1:

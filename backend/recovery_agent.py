@@ -167,3 +167,42 @@ def policy_guard(transaction, decision, historical_execution=False):
         "passed": allowed,
         "reason": "Policy guard allows the selected action" if allowed else "Policy guard blocks external execution",
     }]
+
+
+def apply_policy_override(transaction, decision, historical_execution=False):
+    guarded = dict(decision)
+    guarded["policy_override"] = False
+    guarded["policy_override_reason"] = None
+    failure_reason = str(transaction.get("failure_reason") or "unknown").lower()
+    is_recovered = str(transaction.get("status") or "").lower() == "recovered" or str(transaction.get("recovery_status") or "").lower() == "successful"
+    recommended_action = str(guarded.get("recommended_action") or guarded.get("action") or "").lower()
+
+    if int(transaction.get("is_synthetic") or 0) == 1 or int(transaction.get("customer_opted_out") or 0) == 1 or (is_recovered and not historical_execution):
+        guarded["action"] = "stop"
+        guarded["reason"] = "Policy guard stopped external recovery"
+        guarded["risk_level"] = "low"
+        guarded["requires_human_review"] = False
+    elif int(transaction.get("retry_count") or 0) >= 2 or float(transaction.get("amount") or 0) > 10000 or failure_reason not in {
+        "network_error",
+        "timeout",
+        "bank_decline",
+        "insufficient_funds",
+        "abandoned_checkout",
+        "expired_payment",
+    }:
+        guarded["action"] = "human_review"
+        guarded["reason"] = "Policy guard requires human review"
+        guarded["risk_level"] = "high"
+        guarded["requires_human_review"] = True
+    elif failure_reason == "bank_decline" and recommended_action == "retry":
+        guarded["action"] = "payment_link"
+        guarded["reason"] = "Immediate retry may repeat the issuer decline; policy selected a payment link instead."
+        guarded["risk_level"] = "low"
+        guarded["requires_human_review"] = False
+        guarded["policy_override"] = True
+        guarded["policy_override_reason"] = "Bank decline policy blocks immediate retry."
+
+    guarded["final_guarded_action"] = guarded["action"]
+    if not guarded.get("policy_override"):
+        guarded.pop("policy_override_reason", None)
+    return guarded

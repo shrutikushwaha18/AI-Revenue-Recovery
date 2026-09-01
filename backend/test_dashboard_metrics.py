@@ -5,6 +5,7 @@ import os
 
 from app import app
 from database import get_db
+from recovery_agent import apply_policy_override
 
 
 def test_payment_link_paid_webhook_sets_successful_recovery_state_and_is_idempotent():
@@ -95,6 +96,38 @@ def test_payment_link_paid_webhook_sets_successful_recovery_state_and_is_idempot
             os.environ.pop("RAZORPAY_WEBHOOK_SECRET", None)
         else:
             os.environ["RAZORPAY_WEBHOOK_SECRET"] = original_secret
+
+
+def test_bank_decline_retry_is_overridden_by_policy_guard():
+    transaction = {
+        "transaction_id": "TXN007",
+        "amount": 2499,
+        "failure_reason": "bank_decline",
+        "retry_count": 0,
+        "status": "failed",
+        "recovery_status": "pending",
+        "customer_opted_out": 0,
+        "is_synthetic": 0,
+    }
+
+    decision = {
+        "action": "retry",
+        "reason": "Temporary network issue detected; retry is recommended",
+        "risk_level": "medium",
+        "requires_human_review": False,
+        "reasoning_source": "llm",
+        "recommended_action": "retry",
+    }
+
+    guarded = apply_policy_override(transaction, decision)
+
+    assert guarded["action"] == "payment_link"
+    assert guarded["final_guarded_action"] == "payment_link"
+    assert guarded["reasoning_source"] == "llm"
+    assert guarded["recommended_action"] == "retry"
+    assert guarded["policy_override"] is True
+    assert guarded["policy_override_reason"] == "Bank decline policy blocks immediate retry."
+    assert "issuer decline" in guarded["reason"].lower()
 
 
 def test_dashboard_metrics_are_mutually_exclusive():

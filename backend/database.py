@@ -94,5 +94,27 @@ def init_db():
         """
     )
 
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS agent_decisions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            transaction_id TEXT UNIQUE,
+            reasoning_source TEXT,
+            recommended_action TEXT,
+            final_guarded_action TEXT,
+            action TEXT,
+            reason TEXT,
+            guarded_reason TEXT,
+            risk_level TEXT,
+            requires_human_review INTEGER DEFAULT 0,
+            policy_override INTEGER DEFAULT 0,
+            policy_override_reason TEXT,
+            confidence REAL,
+            confidence_type TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+
     conn.commit()
     conn.close()

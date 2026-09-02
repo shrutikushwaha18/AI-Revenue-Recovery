@@ -209,6 +209,111 @@ def normalize_recovery_outcome(row):
     return "pending"
 
 
+def build_agent_decision(transaction, historical_execution=False):
+    deterministic_decision = decide_recovery_action(transaction)
+    if historical_execution and transaction.get("recovery_action"):
+        recommended_decision = {
+            "action": transaction.get("recovery_action"),
+            "reason": "Previously recorded recovery decision",
+            "confidence": None,
+            "confidence_type": "historical decision record",
+            "risk_level": "low",
+            "requires_human_review": False,
+            "reasoning_source": "deterministic_fallback",
+            "recommended_action": transaction.get("recovery_action"),
+        }
+    else:
+        recommended_decision = reason_transaction(transaction, deterministic_decision)
+
+    guarded_decision = apply_policy_override(transaction, recommended_decision, historical_execution=historical_execution)
+    guarded_decision["final_guarded_action"] = guarded_decision["action"]
+    guarded_decision["guarded_reason"] = guarded_decision["reason"]
+    return guarded_decision
+
+
+def get_or_create_agent_decision(transaction):
+    if int(transaction.get("is_synthetic") or 0) == 1:
+        return {
+            "transaction_id": transaction.get("transaction_id"),
+            "reasoning_source": "deterministic_fallback",
+            "recommended_action": "stop",
+            "final_guarded_action": "stop",
+            "action": "stop",
+            "reason": "Synthetic batch transactions do not persist agent decisions",
+            "guarded_reason": "Synthetic batch transactions do not persist agent decisions",
+            "risk_level": "low",
+            "requires_human_review": False,
+            "policy_override": False,
+            "policy_override_reason": None,
+            "confidence": None,
+            "confidence_type": "synthetic batch decision",
+            "decision_reused": False,
+        }
+
+    transaction_id = str(transaction.get("transaction_id") or "").strip()
+    if not transaction_id:
+        decision = build_agent_decision(transaction)
+        decision["decision_reused"] = False
+        return decision
+
+    conn = get_db()
+    row = conn.execute(
+        "SELECT * FROM agent_decisions WHERE transaction_id = ?",
+        (transaction_id,),
+    ).fetchone()
+
+    if row is not None:
+        payload = dict(row)
+        payload["decision_reused"] = True
+        payload["policy_override"] = bool(payload.get("policy_override"))
+        payload["requires_human_review"] = bool(payload.get("requires_human_review"))
+        payload["action"] = payload.get("final_guarded_action") or payload.get("action")
+        payload["final_guarded_action"] = payload.get("final_guarded_action") or payload.get("action")
+        conn.close()
+        return payload
+
+    decision = build_agent_decision(transaction)
+    conn.execute(
+        """
+        INSERT INTO agent_decisions (
+            transaction_id,
+            reasoning_source,
+            recommended_action,
+            final_guarded_action,
+            action,
+            reason,
+            guarded_reason,
+            risk_level,
+            requires_human_review,
+            policy_override,
+            policy_override_reason,
+            confidence,
+            confidence_type
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            transaction_id,
+            decision.get("reasoning_source"),
+            decision.get("recommended_action"),
+            decision.get("final_guarded_action") or decision.get("action"),
+            decision.get("action"),
+            decision.get("reason"),
+            decision.get("guarded_reason") or decision.get("reason"),
+            decision.get("risk_level"),
+            int(bool(decision.get("requires_human_review"))),
+            int(bool(decision.get("policy_override"))),
+            decision.get("policy_override_reason"),
+            decision.get("confidence"),
+            decision.get("confidence_type"),
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+    decision["decision_reused"] = False
+    return decision
+
+
 @app.route("/")
 def home():
     return jsonify({"message": "RecoverAI backend running"})
@@ -231,7 +336,7 @@ def analyze_transaction(transaction_id):
         return jsonify({"error": "Transaction not found"}), 404
 
     transaction = dict(transaction)
-    decision = apply_policy_override(transaction, reason_transaction(transaction, decide_recovery_action(transaction)))
+    decision = build_agent_decision(transaction)
 
     conn = get_db()
     try:
@@ -291,29 +396,8 @@ def agent_trace(transaction_id):
         None,
     )
     revenue_recovered = any(item.get("action") == "revenue_recovered" for item in audit_logs)
-    deterministic_decision = decide_recovery_action(transaction)
-    if transaction.get("recovery_action") and revenue_recovered:
-        recommended_decision = {
-            "action": transaction.get("recovery_action"),
-            "reason": payment_link_audit.get("reason") if payment_link_audit else "Previously recorded recovery decision",
-            "confidence": None,
-            "confidence_type": "historical decision record",
-            "risk_level": "low",
-            "requires_human_review": False,
-            "reasoning_source": "deterministic_fallback",
-            "recommended_action": transaction.get("recovery_action"),
-        }
-    else:
-        recommended_decision = reason_transaction(transaction, deterministic_decision)
-
-    guarded_decision = apply_policy_override(transaction, recommended_decision, historical_execution=bool(payment_link_audit))
-    decision = {
-        **recommended_decision,
-        **guarded_decision,
-        "action": guarded_decision["action"],
-        "final_guarded_action": guarded_decision["action"],
-        "guarded_reason": guarded_decision["reason"],
-    }
+    decision = get_or_create_agent_decision(transaction)
+    decision_reused = bool(decision.get("decision_reused"))
 
     guardrails = policy_guard(transaction, decision, historical_execution=bool(payment_link_audit))
     execution = {
@@ -337,6 +421,7 @@ def agent_trace(transaction_id):
         "transaction_id": normalized_transaction_id,
         "observation": observe_transaction(transaction),
         "decision": decision,
+        "decision_reused": decision_reused,
         "guardrails": guardrails,
         "execution": execution,
         "outcome": outcome,
@@ -357,9 +442,8 @@ def recover_transaction(transaction_id):
         return jsonify({"error": "Transaction not found"}), 404
 
     transaction = dict(row)
-    deterministic_decision = decide_recovery_action(transaction)
-    recommended_decision = reason_transaction(transaction, deterministic_decision)
-    decision = apply_policy_override(transaction, recommended_decision)
+    decision = get_or_create_agent_decision(transaction)
+    decision_reused = bool(decision.get("decision_reused"))
     guardrails = policy_guard(transaction, decision)
 
     if int(transaction.get("is_synthetic") or 0) == 1:
@@ -370,6 +454,7 @@ def recover_transaction(transaction_id):
                 "executed": False,
                 "reason": "Synthetic transactions cannot trigger Razorpay recovery",
                 "decision": decision,
+                "decision_reused": decision_reused,
                 "guardrails": guardrails,
             }
         )
@@ -384,17 +469,77 @@ def recover_transaction(transaction_id):
                 "transaction_id": normalized_transaction_id,
                 "recovered_amount": recovered_amount,
                 "message": "Transaction already recovered",
+                "decision": decision,
+                "decision_reused": decision_reused,
                 "guardrails": guardrails,
             }
         )
 
-    if decision["action"] not in ["payment_link", "payment_link_later"]:
+    final_guarded_action = decision["final_guarded_action"]
+    if final_guarded_action == "retry" and transaction.get("recovery_status") == "retry_scheduled":
+        conn.close()
+        return jsonify(
+            {
+                "success": True,
+                "executed": True,
+                "transaction_id": normalized_transaction_id,
+                "execution": {
+                    "action": "retry",
+                    "external_tool": None,
+                    "retry_scheduled": True,
+                },
+                "decision": decision,
+                "decision_reused": decision_reused,
+                "guardrails": guardrails,
+            }
+        )
+
+    if final_guarded_action not in ["retry", "payment_link", "payment_link_later"]:
         conn.close()
         return jsonify({"decision": decision, "guardrails": guardrails, "executed": False})
 
     if not all(check["passed"] for check in guardrails):
         conn.close()
         return jsonify({"decision": decision, "guardrails": guardrails, "executed": False})
+
+    if final_guarded_action == "retry":
+        next_retry_count = int(transaction.get("retry_count") or 0) + 1
+        conn.execute(
+            """
+            UPDATE transactions
+            SET retry_count = ?,
+                recovery_attempted = 1,
+                recovery_action = 'retry',
+                recovery_status = 'retry_scheduled',
+                updated_at = CURRENT_TIMESTAMP
+            WHERE transaction_id = ?
+            """,
+            (next_retry_count, normalized_transaction_id),
+        )
+        conn.execute(
+            """
+            INSERT INTO audit_logs (transaction_id, action, reason)
+            VALUES (?, 'retry_scheduled', 'Retry scheduled for bounded recovery workflow')
+            """,
+            (normalized_transaction_id,),
+        )
+        conn.commit()
+        conn.close()
+        return jsonify(
+            {
+                "success": True,
+                "executed": True,
+                "transaction_id": normalized_transaction_id,
+                "execution": {
+                    "action": "retry",
+                    "external_tool": None,
+                    "retry_scheduled": True,
+                },
+                "decision": decision,
+                "decision_reused": decision_reused,
+                "guardrails": guardrails,
+            }
+        )
 
     existing_payment_link = transaction.get("payment_link")
     existing_payment_link_id = transaction.get("payment_link_id")
@@ -416,6 +561,7 @@ def recover_transaction(transaction_id):
                 "recovery_status": transaction.get("recovery_status"),
                 "message": "Existing active recovery payment link returned",
                 "decision": decision,
+                "decision_reused": decision_reused,
             }
         )
 
@@ -426,7 +572,7 @@ def recover_transaction(transaction_id):
         payment_link_id = response.get("id") or None
         metadata = {
             "failure_reason": str(transaction.get("failure_reason") or "unknown"),
-            "recovery_action": str(transaction.get("recovery_action") or decision.get("action") or "payment_link"),
+            "recovery_action": str(decision.get("final_guarded_action") or decision.get("action") or "payment_link"),
             "workflow": "revenue_recovery",
             "source": "RecoverAI",
         }
@@ -447,7 +593,7 @@ def recover_transaction(transaction_id):
                 short_url,
                 payment_link_id,
                 reference_id,
-                str(decision.get("action") or "payment_link"),
+                str(decision.get("final_guarded_action") or decision.get("action") or "payment_link"),
                 "recovery_started",
                 normalized_transaction_id,
             ),
@@ -487,6 +633,7 @@ def recover_transaction(transaction_id):
                 "payment_link_id": payment_link_id,
                 "razorpay_reference_id": reference_id,
                 "decision": decision,
+                "decision_reused": decision_reused,
                 "metadata_sent_to_razorpay": metadata,
             }
         )
@@ -499,11 +646,13 @@ def recover_transaction(transaction_id):
                 "success": False,
                 "error": "Duplicate Razorpay reference_id. Please retry with a new attempt.",
                 "decision": decision,
+                "decision_reused": decision_reused,
             }), 409
         return jsonify({
             "success": False,
             "error": str(exc),
             "decision": decision,
+            "decision_reused": decision_reused,
         }), 500
 
 

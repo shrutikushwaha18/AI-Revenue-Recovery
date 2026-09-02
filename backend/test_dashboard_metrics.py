@@ -130,6 +130,196 @@ def test_bank_decline_retry_is_overridden_by_policy_guard():
     assert "issuer decline" in guarded["reason"].lower()
 
 
+def test_agent_decision_snapshot_is_reused_across_trace_and_recover(monkeypatch):
+    original_reason_transaction = app.reason_transaction
+    original_apply_policy_override = app.apply_policy_override
+    original_create_payment_link = app.create_payment_link
+    call_count = {"reason_transaction": 0}
+
+    def fake_reason_transaction(transaction, deterministic_decision, deterministic_only=False):
+        call_count["reason_transaction"] += 1
+        return {
+            "action": "retry",
+            "reason": "Temporary network issue detected; retry is recommended",
+            "confidence": None,
+            "confidence_type": "LLM recommendation, not a probability",
+            "risk_level": "medium",
+            "requires_human_review": False,
+            "reasoning_source": "llm",
+            "recommended_action": "retry",
+        }
+
+    def fake_apply_policy_override(transaction, decision, historical_execution=False):
+        guarded = dict(decision)
+        guarded["action"] = "payment_link"
+        guarded["final_guarded_action"] = "payment_link"
+        guarded["guarded_reason"] = "Immediate retry may repeat the issuer decline; policy selected a payment link instead."
+        guarded["policy_override"] = True
+        guarded["policy_override_reason"] = "Bank decline policy blocks immediate retry."
+        guarded["reason"] = guarded["guarded_reason"]
+        guarded["risk_level"] = "low"
+        guarded["requires_human_review"] = False
+        return guarded
+
+    def fake_create_payment_link(transaction, reference_id=None):
+        return {
+            "id": "plink_snapshot_123",
+            "short_url": "https://rzp.io/i/recoverai-snapshot",
+            "reference_id": reference_id,
+        }
+
+    monkeypatch.setattr("app.reason_transaction", fake_reason_transaction)
+    monkeypatch.setattr("app.apply_policy_override", fake_apply_policy_override)
+    monkeypatch.setattr("app.create_payment_link", fake_create_payment_link)
+
+    conn = get_db()
+    conn.execute("DELETE FROM agent_decisions WHERE transaction_id = 'TXN007'")
+    conn.commit()
+    conn.close()
+
+    with app.test_client() as client:
+        trace_response = client.get('/api/agent/trace/TXN007')
+        trace_payload = trace_response.get_json()
+
+        assert trace_response.status_code == 200
+        assert trace_payload["decision"]["reasoning_source"] == "llm"
+        assert trace_payload["decision"]["recommended_action"] == "retry"
+        assert trace_payload["decision"]["final_guarded_action"] == "payment_link"
+        assert trace_payload["decision"]["policy_override"] is True
+        assert trace_payload["decision_reused"] is False
+
+        recover_response = client.post('/api/recover/TXN007')
+        recover_payload = recover_response.get_json()
+
+        assert recover_response.status_code == 200
+        assert recover_payload["decision"]["reasoning_source"] == "llm"
+        assert recover_payload["decision"]["recommended_action"] == "retry"
+        assert recover_payload["decision"]["final_guarded_action"] == "payment_link"
+        assert recover_payload["decision"]["policy_override"] is True
+        assert recover_payload["decision"]["final_guarded_action"] == recover_payload["decision"]["action"]
+        assert call_count["reason_transaction"] == 1
+
+    monkeypatch.setattr("app.reason_transaction", original_reason_transaction)
+    monkeypatch.setattr("app.apply_policy_override", original_apply_policy_override)
+    monkeypatch.setattr("app.create_payment_link", original_create_payment_link)
+
+
+def test_stored_llm_retry_decision_schedules_retry(monkeypatch):
+    transaction_id = "TXN004"
+    conn = get_db()
+    conn.execute(
+        """
+        UPDATE transactions
+        SET retry_count = 0,
+            recovery_status = 'pending',
+            recovery_action = NULL,
+            recovery_attempted = 0,
+            recovery_success = 0,
+            recovered_amount = 0,
+            status = 'failed',
+            payment_link = NULL,
+            payment_link_id = NULL,
+            razorpay_reference_id = NULL
+        WHERE transaction_id = ?
+        """,
+        (transaction_id,),
+    )
+    conn.execute("DELETE FROM agent_decisions WHERE transaction_id = ?", (transaction_id,))
+    conn.execute("DELETE FROM audit_logs WHERE transaction_id = ?", (transaction_id,))
+    conn.execute(
+        """
+        INSERT INTO agent_decisions (
+            transaction_id, reasoning_source, recommended_action,
+            final_guarded_action, action, reason, guarded_reason, risk_level,
+            requires_human_review, policy_override, confidence_type
+        ) VALUES (?, 'llm', 'retry', 'retry', 'retry', ?, ?, 'medium', 0, 0, ?)
+        """,
+        (
+            transaction_id,
+            "Temporary timeout detected",
+            "Temporary timeout detected",
+            "LLM recommendation, not a probability",
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+    try:
+        with app.test_client() as client:
+            response = client.post(f"/api/recover/{transaction_id}")
+            payload = response.get_json()
+
+        assert response.status_code == 200
+        assert payload["success"] is True
+        assert payload["executed"] is True
+        assert payload["decision_reused"] is True
+        assert payload["decision"]["final_guarded_action"] == "retry"
+        assert payload["execution"] == {
+            "action": "retry",
+            "external_tool": None,
+            "retry_scheduled": True,
+        }
+
+        conn = get_db()
+        transaction = conn.execute(
+            "SELECT retry_count, recovery_attempted, recovery_action, recovery_status, recovery_success, recovered_amount, status FROM transactions WHERE transaction_id = ?",
+            (transaction_id,),
+        ).fetchone()
+        audit = conn.execute(
+            "SELECT action FROM audit_logs WHERE transaction_id = ?",
+            (transaction_id,),
+        ).fetchall()
+        conn.close()
+
+        assert transaction["retry_count"] == 1
+        assert transaction["recovery_attempted"] == 1
+        assert transaction["recovery_action"] == "retry"
+        assert transaction["recovery_status"] == "retry_scheduled"
+        assert transaction["recovery_success"] == 0
+        assert transaction["recovered_amount"] == 0
+        assert transaction["status"] == "failed"
+        assert [row["action"] for row in audit] == ["retry_scheduled"]
+
+        second_response = client.post(f"/api/recover/{transaction_id}")
+        second_payload = second_response.get_json()
+        assert second_response.status_code == 200
+        assert second_payload["executed"] is True
+        assert second_payload["execution"]["retry_scheduled"] is True
+
+        conn = get_db()
+        retry_count = conn.execute(
+            "SELECT retry_count FROM transactions WHERE transaction_id = ?",
+            (transaction_id,),
+        ).fetchone()["retry_count"]
+        audit_count = conn.execute(
+            "SELECT COUNT(*) FROM audit_logs WHERE transaction_id = ? AND action = 'retry_scheduled'",
+            (transaction_id,),
+        ).fetchone()[0]
+        conn.close()
+        assert retry_count == 1
+        assert audit_count == 1
+    finally:
+        conn = get_db()
+        conn.execute("DELETE FROM agent_decisions WHERE transaction_id = ?", (transaction_id,))
+        conn.execute("DELETE FROM audit_logs WHERE transaction_id = ?", (transaction_id,))
+        conn.execute(
+            """
+            UPDATE transactions
+            SET retry_count = 0,
+                recovery_status = 'pending',
+                recovery_action = NULL,
+                recovery_attempted = 0,
+                recovery_success = 0,
+                recovered_amount = 0,
+                status = 'failed'
+            WHERE transaction_id = ?
+            """,
+            (transaction_id,),
+        )
+        conn.commit()
+        conn.close()
+
+
 def test_dashboard_metrics_are_mutually_exclusive():
     with app.test_client() as client:
         conn = get_db()

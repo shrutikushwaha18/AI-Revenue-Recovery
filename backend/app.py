@@ -197,7 +197,7 @@ def simulate_batch_recovery(transaction, action):
 
 
 def normalize_recovery_outcome(row):
-    final_status = (row.get("final_recovery_status") or row.get("recovery_status") or row.get("status") or "").strip().lower()
+    final_status = (row.get("final_recovery_status") or row.get("recovery_status") or "").strip().lower()
     if final_status in {"successful", "recovered"}:
         return "recovered"
     if final_status == "human_review":
@@ -747,10 +747,32 @@ def batch_analyze():
     ).fetchall()
     summary = []
 
-    conn.execute("DELETE FROM audit_logs WHERE transaction_id LIKE 'BATCH%'")
-
     for row in rows:
         transaction = dict(row)
+        existing_audit = conn.execute(
+            """
+            SELECT 1
+            FROM audit_logs
+            WHERE transaction_id = ? AND action = 'batch_recovery_simulated'
+            LIMIT 1
+            """,
+            (transaction["transaction_id"],),
+        ).fetchone()
+        if existing_audit is not None:
+            summary.append(
+                {
+                    "transaction_id": transaction["transaction_id"],
+                    "action": transaction.get("recovery_action"),
+                    "reason": transaction.get("recovery_reason"),
+                    "recovery_attempted": transaction.get("recovery_attempted") or 0,
+                    "recovery_success": transaction.get("recovery_success") or 0,
+                    "recovered_amount": transaction.get("recovered_amount") or 0.0,
+                    "final_recovery_status": transaction.get("final_recovery_status") or "pending",
+                    "synthetic_simulation": True,
+                }
+            )
+            continue
+
         reset_row = {
             "status": "failed",
             "recovery_status": "pending",

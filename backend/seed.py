@@ -1,4 +1,4 @@
-from database import DB_PATH, get_db, init_db
+from database import get_db, init_db, using_postgres
 
 TRANSACTIONS = [
     (
@@ -76,7 +76,7 @@ TRANSACTIONS = [
 
 def seed_db():
     init_db()
-    print("SQLite DB path:", DB_PATH)
+    print(f"Database backend: {'PostgreSQL' if using_postgres() else 'SQLite'}")
     conn = get_db()
 
     for transaction in TRANSACTIONS:
@@ -97,10 +97,7 @@ def seed_db():
         )
 
     conn.commit()
-    transaction_count = conn.execute("SELECT COUNT(*) FROM transactions").fetchone()[0]
     conn.close()
-    print("Startup transaction count:", transaction_count)
-    print("Synthetic transactions seeded if missing.")
 
 
 if __name__ == "__main__":

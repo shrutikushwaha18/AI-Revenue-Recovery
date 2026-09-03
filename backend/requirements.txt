@@ -4,3 +4,4 @@ python-dotenv
 requests
 razorpay
 gunicorn
+psycopg2-binary

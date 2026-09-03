@@ -3,9 +3,10 @@ import hmac
 import json
 import os
 
-from app import app
+import app as app_module
 from database import get_db
 from recovery_agent import apply_policy_override
+from seed import seed_db
 
 
 def test_payment_link_paid_webhook_sets_successful_recovery_state_and_is_idempotent():
@@ -14,8 +15,11 @@ def test_payment_link_paid_webhook_sets_successful_recovery_state_and_is_idempot
     os.environ["RAZORPAY_WEBHOOK_SECRET"] = secret
 
     try:
-        with app.test_client() as client:
+        with app_module.app.test_client() as client:
             conn = get_db()
+            original_amount = conn.execute(
+                "SELECT amount FROM transactions WHERE transaction_id = 'TXN005'"
+            ).fetchone()["amount"]
             conn.execute(
                 """
                 UPDATE transactions
@@ -63,7 +67,7 @@ def test_payment_link_paid_webhook_sets_successful_recovery_state_and_is_idempot
             assert tx["final_recovery_status"] == "successful"
             assert tx["recovery_attempted"] == 1
             assert tx["recovery_success"] == 1
-            assert tx["recovered_amount"] == 3499
+            assert tx["recovered_amount"] == original_amount
             assert tx["recovered_at"] is not None
 
             audit_actions = [
@@ -96,6 +100,66 @@ def test_payment_link_paid_webhook_sets_successful_recovery_state_and_is_idempot
             os.environ.pop("RAZORPAY_WEBHOOK_SECRET", None)
         else:
             os.environ["RAZORPAY_WEBHOOK_SECRET"] = original_secret
+
+
+def test_seed_db_does_not_overwrite_existing_recovered_transaction():
+    transaction_id = "TXN007"
+    conn = get_db()
+    original = dict(
+        conn.execute(
+            "SELECT status, recovery_status, recovery_success, recovered_amount, recovered_at FROM transactions WHERE transaction_id = ?",
+            (transaction_id,),
+        ).fetchone()
+    )
+    conn.execute(
+        """
+        UPDATE transactions
+        SET status = 'recovered',
+            recovery_status = 'successful',
+            recovery_success = 1,
+            recovered_amount = 2499,
+            recovered_at = CURRENT_TIMESTAMP
+        WHERE transaction_id = ?
+        """,
+        (transaction_id,),
+    )
+    conn.commit()
+    conn.close()
+
+    try:
+        seed_db()
+        conn = get_db()
+        recovered = conn.execute(
+            "SELECT status, recovery_status, recovery_success, recovered_amount, recovered_at FROM transactions WHERE transaction_id = ?",
+            (transaction_id,),
+        ).fetchone()
+        conn.close()
+
+        assert recovered["status"] == "recovered"
+        assert recovered["recovery_status"] == "successful"
+        assert recovered["recovery_success"] == 1
+        assert recovered["recovered_amount"] == 2499
+        assert recovered["recovered_at"] is not None
+    finally:
+        conn = get_db()
+        conn.execute(
+            """
+            UPDATE transactions
+            SET status = ?, recovery_status = ?, recovery_success = ?,
+                recovered_amount = ?, recovered_at = ?
+            WHERE transaction_id = ?
+            """,
+            (
+                original["status"],
+                original["recovery_status"],
+                original["recovery_success"],
+                original["recovered_amount"],
+                original["recovered_at"],
+                transaction_id,
+            ),
+        )
+        conn.commit()
+        conn.close()
 
 
 def test_bank_decline_retry_is_overridden_by_policy_guard():
@@ -131,9 +195,9 @@ def test_bank_decline_retry_is_overridden_by_policy_guard():
 
 
 def test_agent_decision_snapshot_is_reused_across_trace_and_recover(monkeypatch):
-    original_reason_transaction = app.reason_transaction
-    original_apply_policy_override = app.apply_policy_override
-    original_create_payment_link = app.create_payment_link
+    original_reason_transaction = app_module.reason_transaction
+    original_apply_policy_override = app_module.apply_policy_override
+    original_create_payment_link = app_module.create_payment_link
     call_count = {"reason_transaction": 0}
 
     def fake_reason_transaction(transaction, deterministic_decision, deterministic_only=False):
@@ -168,16 +232,16 @@ def test_agent_decision_snapshot_is_reused_across_trace_and_recover(monkeypatch)
             "reference_id": reference_id,
         }
 
-    monkeypatch.setattr("app.reason_transaction", fake_reason_transaction)
-    monkeypatch.setattr("app.apply_policy_override", fake_apply_policy_override)
-    monkeypatch.setattr("app.create_payment_link", fake_create_payment_link)
+    monkeypatch.setattr(app_module, "reason_transaction", fake_reason_transaction)
+    monkeypatch.setattr(app_module, "apply_policy_override", fake_apply_policy_override)
+    monkeypatch.setattr(app_module, "create_payment_link", fake_create_payment_link)
 
     conn = get_db()
     conn.execute("DELETE FROM agent_decisions WHERE transaction_id = 'TXN007'")
     conn.commit()
     conn.close()
 
-    with app.test_client() as client:
+    with app_module.app.test_client() as client:
         trace_response = client.get('/api/agent/trace/TXN007')
         trace_payload = trace_response.get_json()
 
@@ -199,9 +263,9 @@ def test_agent_decision_snapshot_is_reused_across_trace_and_recover(monkeypatch)
         assert recover_payload["decision"]["final_guarded_action"] == recover_payload["decision"]["action"]
         assert call_count["reason_transaction"] == 1
 
-    monkeypatch.setattr("app.reason_transaction", original_reason_transaction)
-    monkeypatch.setattr("app.apply_policy_override", original_apply_policy_override)
-    monkeypatch.setattr("app.create_payment_link", original_create_payment_link)
+    monkeypatch.setattr(app_module, "reason_transaction", original_reason_transaction)
+    monkeypatch.setattr(app_module, "apply_policy_override", original_apply_policy_override)
+    monkeypatch.setattr(app_module, "create_payment_link", original_create_payment_link)
 
 
 def test_stored_llm_retry_decision_schedules_retry(monkeypatch):
@@ -245,7 +309,7 @@ def test_stored_llm_retry_decision_schedules_retry(monkeypatch):
     conn.close()
 
     try:
-        with app.test_client() as client:
+        with app_module.app.test_client() as client:
             response = client.post(f"/api/recover/{transaction_id}")
             payload = response.get_json()
 
@@ -321,11 +385,13 @@ def test_stored_llm_retry_decision_schedules_retry(monkeypatch):
 
 
 def test_dashboard_metrics_are_mutually_exclusive():
-    with app.test_client() as client:
+    with app_module.app.test_client() as client:
+        app_module.ensure_batch_seeded()
         conn = get_db()
         conn.execute(
             "UPDATE transactions SET final_recovery_status = NULL, recovery_status = NULL, recovery_success = 0, recovery_attempted = 0, recovered_amount = 0, recovery_action = NULL, status = 'failed' WHERE is_synthetic = 1"
         )
+        conn.execute("DELETE FROM audit_logs WHERE transaction_id LIKE 'BATCH%'")
 
         updates = [
             ("BATCH001", "successful", "successful", 1, 1, 100.0, "stop", "recovered"),
@@ -362,7 +428,7 @@ def test_dashboard_metrics_are_mutually_exclusive():
         assert payload["human_escalations"] == 1
         assert payload["failed_recoveries"] == 1
         assert payload["stopped_by_policy"] == 1
-        assert payload["pending_recoveries"] == 1
+        assert payload["pending_recoveries"] == 96
         assert payload["simulation_seed"] == "recoverai-v1"
         assert payload["simulation_version"] == "1.0"
         assert payload["reproducible"] is True
@@ -383,7 +449,7 @@ def test_dashboard_metrics_are_mutually_exclusive():
         assert outcome_payload["human_review"] == 1
         assert outcome_payload["failed"] == 1
         assert outcome_payload["stopped"] == 1
-        assert outcome_payload["pending"] == 1
+        assert outcome_payload["pending"] == 96
         assert outcome_payload["synthetic_simulation"] is True
         assert (
             outcome_payload["successful"]
@@ -396,7 +462,7 @@ def test_dashboard_metrics_are_mutually_exclusive():
 
 
 def test_batch_reset_and_analyze_are_reproducible_and_idempotent():
-    with app.test_client() as client:
+    with app_module.app.test_client() as client:
         reset_response = client.post('/api/batch/reset')
         assert reset_response.status_code == 200
         reset_payload = reset_response.get_json()
@@ -448,14 +514,29 @@ def test_live_recovery_creates_razorpay_metadata_and_blocks_synthetic_transactio
             "reference_id": reference_id,
         }
 
-    monkeypatch.setattr("app.create_payment_link", fake_create_payment_link)
+    monkeypatch.setattr(app_module, "create_payment_link", fake_create_payment_link)
 
-    with app.test_client() as client:
+    with app_module.app.test_client() as client:
         conn = get_db()
         conn.execute(
-            "UPDATE transactions SET recovery_status = 'pending', recovery_action = NULL, payment_link = NULL, payment_link_id = NULL, razorpay_reference_id = NULL WHERE transaction_id = 'TXN005'"
+            """
+            UPDATE transactions
+            SET status = 'failed',
+                recovery_status = 'pending',
+                final_recovery_status = NULL,
+                recovery_attempted = 0,
+                recovery_success = 0,
+                recovered_amount = 0,
+                recovered_at = NULL,
+                recovery_action = NULL,
+                payment_link = NULL,
+                payment_link_id = NULL,
+                razorpay_reference_id = NULL
+            WHERE transaction_id = 'TXN005'
+            """
         )
         conn.execute("DELETE FROM audit_logs WHERE transaction_id = 'TXN005'")
+        conn.execute("DELETE FROM agent_decisions WHERE transaction_id = 'TXN005'")
         conn.commit()
 
         response = client.post('/api/recover/TXN005')
@@ -485,7 +566,7 @@ def test_live_recovery_creates_razorpay_metadata_and_blocks_synthetic_transactio
         second_response = client.post('/api/recover/TXN005')
         assert second_response.status_code == 200
         second_payload = second_response.get_json()
-        assert second_payload["reused_existing_payment_link"] is True
+        assert second_payload["reused_existing_link"] is True
 
         audit_rows_after_second = conn.execute(
             "SELECT COUNT(*) FROM audit_logs WHERE transaction_id = 'TXN005' AND action = 'payment_link_created'"
@@ -503,6 +584,6 @@ def test_live_recovery_creates_razorpay_metadata_and_blocks_synthetic_transactio
         assert synthetic_response.status_code == 200
         synthetic_payload = synthetic_response.get_json()
         assert synthetic_payload["executed"] is False
-        assert synthetic_payload["reason"] == "Synthetic batch transactions cannot trigger real Razorpay actions"
+        assert synthetic_payload["reason"] == "Synthetic transactions cannot trigger Razorpay recovery"
 
         conn.close()

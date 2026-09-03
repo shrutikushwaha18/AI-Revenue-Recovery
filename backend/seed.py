@@ -78,10 +78,10 @@ def seed_db():
     init_db()
     print(f"Database backend: {'PostgreSQL' if using_postgres() else 'SQLite'}")
     conn = get_db()
-
-    for transaction in TRANSACTIONS:
-        conn.execute(
-            """
+    try:
+        for transaction in TRANSACTIONS:
+            conn.execute(
+                """
             INSERT OR IGNORE INTO transactions (
                 transaction_id,
                 customer_name,
@@ -93,11 +93,12 @@ def seed_db():
                 recovery_status
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            transaction,
-        )
+                transaction,
+            )
 
-    conn.commit()
-    conn.close()
+        conn.commit()
+    finally:
+        conn.close()
 
 
 if __name__ == "__main__":

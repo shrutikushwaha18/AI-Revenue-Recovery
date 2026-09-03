@@ -4,7 +4,7 @@ import tempfile
 
 
 _test_database_dir = tempfile.mkdtemp(prefix="recoverai-tests-")
-os.environ.pop("DATABASE_URL", None)
+os.environ["DATABASE_URL"] = ""
 os.environ["SQLITE_DB_PATH"] = os.path.join(_test_database_dir, "recoverai-test.db")
 
 

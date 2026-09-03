@@ -4,9 +4,28 @@ import json
 import os
 
 import app as app_module
+from database import PostgresCursor
 from database import get_db
 from recovery_agent import apply_policy_override
 from seed import seed_db
+
+
+def test_postgres_cursor_execute_without_parameters_preserves_literal_percent():
+    class FakeCursor:
+        def __init__(self):
+            self.calls = []
+
+        def execute(self, *args):
+            self.calls.append(args)
+
+    raw_cursor = FakeCursor()
+    cursor = PostgresCursor(raw_cursor)
+
+    cursor.execute("SELECT COUNT(*) FROM transactions WHERE transaction_id LIKE 'BATCH%'")
+
+    assert raw_cursor.calls == [
+        ("SELECT COUNT(*) FROM transactions WHERE transaction_id LIKE 'BATCH%'",)
+    ]
 
 
 def test_payment_link_paid_webhook_sets_successful_recovery_state_and_is_idempotent():

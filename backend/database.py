@@ -37,12 +37,15 @@ class PostgresCursor:
         self.close()
         return False
 
-    def execute(self, query, parameters=()):
+    def execute(self, query, parameters=None):
         query = query.replace("?", "%s")
         query = re.sub(r"INSERT\s+OR\s+IGNORE\s+INTO", "INSERT INTO", query, flags=re.IGNORECASE)
         if query.lstrip().upper().startswith("INSERT INTO") and "ON CONFLICT" not in query.upper():
             query = f"{query.rstrip().rstrip(';')} ON CONFLICT DO NOTHING"
-        self._cursor.execute(query, parameters)
+        if parameters:
+            self._cursor.execute(query, parameters)
+        else:
+            self._cursor.execute(query)
         return self
 
     def fetchone(self):
@@ -76,7 +79,7 @@ class PostgresConnection:
         _open_connections.connections = getattr(_open_connections, "connections", set())
         _open_connections.connections.add(self)
 
-    def execute(self, query, parameters=()):
+    def execute(self, query, parameters=None):
         cursor = PostgresCursor(self._connection.cursor(), self)
         self._cursors.add(cursor)
         return cursor.execute(query, parameters)

@@ -12,7 +12,7 @@ SIMULATION_SEED = "recoverai-v1"
 SIMULATION_VERSION = "1.0"
 SIMULATION_KEY_VERSION = "v1"
 
-from database import get_db, get_transaction_by_id, init_db
+from database import close_open_connections, get_db, get_transaction_by_id, init_db
 from razorpay_service import create_payment_link, generate_reference_id
 from llm_reasoner import reason_transaction
 from recovery_agent import apply_policy_override, decide_recovery_action, observe_transaction, policy_guard
@@ -22,6 +22,11 @@ load_dotenv()
 
 app = Flask(__name__)
 CORS(app)
+
+
+@app.teardown_appcontext
+def close_database_connections(exception=None):
+    close_open_connections()
 
 init_db()
 seed_db()
@@ -66,15 +71,16 @@ def generate_batch_transactions():
 
 def ensure_batch_seeded():
     conn = get_db()
-    existing = conn.execute(
-        "SELECT COUNT(*) FROM transactions WHERE transaction_id LIKE 'BATCH%'"
-    ).fetchone()[0]
+    try:
+        existing = conn.execute(
+            "SELECT COUNT(*) FROM transactions WHERE transaction_id LIKE 'BATCH%'"
+        ).fetchone()[0]
 
-    if existing == 0:
-        batch_transactions = generate_batch_transactions()
-        for row in batch_transactions:
-            conn.execute(
-                """
+        if existing == 0:
+            batch_transactions = generate_batch_transactions()
+            for row in batch_transactions:
+                conn.execute(
+                    """
                 INSERT OR IGNORE INTO transactions (
                     transaction_id,
                     customer_name,
@@ -90,10 +96,11 @@ def ensure_batch_seeded():
                     is_synthetic
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                row,
-            )
-        conn.commit()
-    conn.close()
+                    row,
+                )
+            conn.commit()
+    finally:
+        conn.close()
 
 
 def deterministic_recovery_score(transaction_id, failure_reason, recovery_action, simulation_version=SIMULATION_KEY_VERSION):
@@ -909,43 +916,43 @@ def batch_analyze():
 def dashboard_metrics():
     ensure_batch_seeded()
     conn = get_db()
-    rows = conn.execute(
-        "SELECT * FROM transactions WHERE is_synthetic = 1"
-    ).fetchall()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM transactions WHERE is_synthetic = 1"
+        ).fetchall()
 
-    total_transactions = len(rows)
-    total_revenue_at_risk = sum(float(row["amount"]) for row in rows)
+        total_transactions = len(rows)
+        total_revenue_at_risk = sum(float(row["amount"]) for row in rows)
 
-    outcome_counts = {
-        "recovered": 0,
-        "human_review": 0,
-        "failed": 0,
-        "stopped": 0,
-        "pending": 0,
-    }
-    for row in rows:
-        outcome = normalize_recovery_outcome(dict(row))
-        outcome_counts[outcome] = outcome_counts.get(outcome, 0) + 1
+        outcome_counts = {
+            "recovered": 0,
+            "human_review": 0,
+            "failed": 0,
+            "stopped": 0,
+            "pending": 0,
+        }
+        for row in rows:
+            outcome = normalize_recovery_outcome(dict(row))
+            outcome_counts[outcome] = outcome_counts.get(outcome, 0) + 1
 
-    recovered_transactions = outcome_counts["recovered"]
-    human_escalations = outcome_counts["human_review"]
-    failed_recoveries = outcome_counts["failed"]
-    stopped_by_policy = outcome_counts["stopped"]
-    pending_recoveries = outcome_counts["pending"]
-    total_revenue_recovered = sum(
-        float(row["recovered_amount"] or 0) for row in rows if normalize_recovery_outcome(dict(row)) == "recovered"
-    )
+        recovered_transactions = outcome_counts["recovered"]
+        human_escalations = outcome_counts["human_review"]
+        failed_recoveries = outcome_counts["failed"]
+        stopped_by_policy = outcome_counts["stopped"]
+        pending_recoveries = outcome_counts["pending"]
+        total_revenue_recovered = sum(
+            float(row["recovered_amount"] or 0) for row in rows if normalize_recovery_outcome(dict(row)) == "recovered"
+        )
 
-    recovery_rate_by_amount = (
-        (total_revenue_recovered / total_revenue_at_risk * 100) if total_revenue_at_risk else 0
-    )
-    recovery_rate_by_count = (
-        (recovered_transactions / total_transactions * 100) if total_transactions else 0
-    )
+        recovery_rate_by_amount = (
+            (total_revenue_recovered / total_revenue_at_risk * 100) if total_revenue_at_risk else 0
+        )
+        recovery_rate_by_count = (
+            (recovered_transactions / total_transactions * 100) if total_transactions else 0
+        )
 
-    conn.close()
-    return jsonify(
-        {
+        return jsonify(
+            {
             "total_transactions": total_transactions,
             "total_revenue_at_risk": round(total_revenue_at_risk, 2),
             "recovered_transactions": recovered_transactions,
@@ -960,8 +967,10 @@ def dashboard_metrics():
             "simulation_version": SIMULATION_VERSION,
             "reproducible": True,
             "synthetic_simulation": True,
-        }
-    )
+            }
+        )
+    finally:
+        conn.close()
 
 
 @app.route("/api/dashboard/outcome-breakdown", methods=["GET"])

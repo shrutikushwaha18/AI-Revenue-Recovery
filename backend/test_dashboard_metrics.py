@@ -507,6 +507,18 @@ def test_batch_reset_and_analyze_are_reproducible_and_idempotent():
 
 
 def test_live_recovery_creates_razorpay_metadata_and_blocks_synthetic_transactions(monkeypatch):
+    def fake_reason_transaction(transaction, deterministic_decision, deterministic_only=False):
+        return {
+            "action": "payment_link",
+            "reason": "Bank decline should use a safer payment link.",
+            "confidence": None,
+            "confidence_type": "LLM recommendation, not a probability",
+            "risk_level": "low",
+            "requires_human_review": False,
+            "reasoning_source": "llm",
+            "recommended_action": "payment_link",
+        }
+
     def fake_create_payment_link(transaction, reference_id=None):
         return {
             "id": "plink_123456",
@@ -514,6 +526,7 @@ def test_live_recovery_creates_razorpay_metadata_and_blocks_synthetic_transactio
             "reference_id": reference_id,
         }
 
+    monkeypatch.setattr(app_module, "reason_transaction", fake_reason_transaction)
     monkeypatch.setattr(app_module, "create_payment_link", fake_create_payment_link)
 
     with app_module.app.test_client() as client:

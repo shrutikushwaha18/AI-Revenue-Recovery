@@ -1,5 +1,6 @@
 import json
 import os
+import re
 
 import requests
 
@@ -54,6 +55,8 @@ def _validate_response(result):
         raise ValueError("LLM returned an unsupported risk level")
     if not isinstance(reason, str) or not reason.strip():
         raise ValueError("LLM reason is missing")
+    if len(reason.split()) > 20:
+        raise ValueError("LLM reason is too long")
     if not isinstance(requires_human_review, bool):
         raise ValueError("LLM human-review flag is invalid")
 
@@ -84,13 +87,9 @@ def _parse_json_content(content):
         raise ValueError("LLM returned empty content")
 
     content_text = content.strip()
-    content_lines = content_text.splitlines()
-    if (
-        len(content_lines) >= 3
-        and content_lines[0].strip().lower() in {"```", "```json"}
-        and content_lines[-1].strip() == "```"
-    ):
-        content_text = "\n".join(content_lines[1:-1]).strip()
+    fenced_match = re.fullmatch(r"```(?:json)?\s*(.*?)\s*```", content_text, re.IGNORECASE | re.DOTALL)
+    if fenced_match:
+        content_text = fenced_match.group(1).strip()
 
     if not content_text:
         print("[LLM] json_parse_success=false")
@@ -120,17 +119,16 @@ def _request_llm(context):
     print(f"[LLM] api_url={api_url}")
     print(f"[LLM] api_key_configured={bool(api_key)}")
     system_prompt = (
-        "Return ONLY one valid JSON object. No markdown. No code fences. No explanation "
-        "before or after JSON. Schema: {\"recommended_action\": "
-        "\"retry|payment_link|payment_link_later|human_review|stop\", "
-        "\"reason\": \"short reason under 25 words\", "
-        "\"risk_level\": \"low|medium|high\", "
-        "\"requires_human_review\": false}"
+        'Return only the JSON object. No markdown. No explanation. '
+        'Reason must be at most 20 words. Use exactly these fields: '
+        '{"recommended_action":"retry|payment_link|payment_link_later|human_review|stop",'
+        '"reason":"one short sentence","risk_level":"low|medium|high",'
+        '"requires_human_review":false}'
     )
     request_payload = {
         "model": model,
-        "temperature": 0,
-        "max_tokens": 600,
+        "temperature": 0.1,
+        "max_tokens": 700,
         "provider": {
             "require_parameters": True,
         },
@@ -218,11 +216,11 @@ def _request_llm(context):
         print("[LLM] response_truncated=true")
         print("[LLM] retrying_truncated_response=true")
         retry_payload = dict(request_payload)
-        retry_payload["max_tokens"] = 1000
+        retry_payload["max_tokens"] = 700
         retry_payload["messages"] = [
             {
                 "role": "system",
-                "content": "Return only the compact JSON object. Do not explain your reasoning.",
+                "content": "Return only JSON. No markdown or explanation. Reason <=20 words.",
             },
             request_payload["messages"][1],
         ]

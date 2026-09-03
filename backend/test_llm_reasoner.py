@@ -23,7 +23,13 @@ class FakeResponse:
 
 
 def _context():
-    return {"transaction_id": "TXN001", "failure_reason": "timeout"}
+    return {
+        "amount": 2499,
+        "failure_reason": "timeout",
+        "retry_count": 0,
+        "customer_opted_out": False,
+        "status": "failed",
+    }
 
 
 def _deterministic_decision():
@@ -55,8 +61,10 @@ def test_valid_short_llm_json(monkeypatch):
     assert result["recommended_action"] == "retry"
     assert result["confidence"] is None
     assert result["confidence_type"] == "LLM recommendation, not a probability"
-    assert requests[0]["max_tokens"] == 700
+    assert requests[0]["max_tokens"] == 2000
     assert requests[0]["temperature"] == 0.1
+    assert requests[0]["reasoning"] == {"effort": "minimal", "exclude": True}
+    assert requests[0]["response_format"] == {"type": "json_object"}
 
 
 def test_truncated_first_response_retries_with_short_prompt(monkeypatch):
@@ -81,10 +89,64 @@ def test_truncated_first_response_retries_with_short_prompt(monkeypatch):
 
     assert result["recommended_action"] == "stop"
     assert len(requests) == 2
-    assert requests[1]["max_tokens"] == 700
+    assert requests[1]["max_tokens"] == 3000
+    assert requests[1]["reasoning"] == {"max_tokens": 100, "exclude": True}
     assert requests[1]["messages"][0]["content"] == (
-        "Return only JSON. No markdown or explanation. Reason <=20 words."
+        "Return ONLY valid JSON. No markdown, analysis, or explanation. Reason <=15 words."
     )
+
+
+def test_rejected_reasoning_configuration_retries_with_safe_configuration(monkeypatch):
+    responses = iter(
+        [
+            FakeResponse("unsupported reasoning", status_code=400),
+            FakeResponse(
+                '{"recommended_action":"retry","reason":"Temporary failure.",'
+                '"risk_level":"low","requires_human_review":false}'
+            ),
+        ]
+    )
+    requests = []
+    monkeypatch.setenv("LLM_API_KEY", "test-key")
+    monkeypatch.setattr(
+        llm_reasoner.requests,
+        "post",
+        lambda *args, **kwargs: requests.append(kwargs["json"]) or next(responses),
+    )
+
+    result = llm_reasoner._request_llm(_context())
+
+    assert result["recommended_action"] == "retry"
+    assert len(requests) == 2
+    assert requests[1]["reasoning"] == {"max_tokens": 100, "exclude": True}
+    assert requests[1]["response_format"] == {"type": "json_object"}
+
+
+def test_rejected_optional_configuration_retries_without_optional_fields(monkeypatch):
+    responses = iter(
+        [
+            FakeResponse("unsupported reasoning", status_code=400),
+            FakeResponse("unsupported reasoning", status_code=400),
+            FakeResponse(
+                '{"recommended_action":"stop","reason":"Repeated failure.",'
+                '"risk_level":"high","requires_human_review":false}'
+            ),
+        ]
+    )
+    requests = []
+    monkeypatch.setenv("LLM_API_KEY", "test-key")
+    monkeypatch.setattr(
+        llm_reasoner.requests,
+        "post",
+        lambda *args, **kwargs: requests.append(kwargs["json"]) or next(responses),
+    )
+
+    result = llm_reasoner._request_llm(_context())
+
+    assert result["recommended_action"] == "stop"
+    assert len(requests) == 3
+    assert "reasoning" not in requests[2]
+    assert "response_format" not in requests[2]
 
 
 def test_invalid_json_uses_deterministic_fallback(monkeypatch):

@@ -66,6 +66,9 @@ function App() {
   const [floatingMenuOpen, setFloatingMenuOpen] = useState(false)
   const [demoOpen, setDemoOpen] = useState(false)
   const [demoStep, setDemoStep] = useState(0)
+  const [liveProofTrace, setLiveProofTrace] = useState(null)
+  const [liveProofLoading, setLiveProofLoading] = useState(false)
+  const [liveProofError, setLiveProofError] = useState(false)
   const [simulationOpen, setSimulationOpen] = useState(false)
   const [simulationProgress, setSimulationProgress] = useState(0)
   const [simulationStage, setSimulationStage] = useState(0)
@@ -150,6 +153,36 @@ function App() {
       showToast('Batch analysis completed', 'Live and synthetic recovery data refreshed.')
     }
   }, [metrics])
+
+  useEffect(() => {
+    if (!openLiveProof) return
+
+    let cancelled = false
+    const loadLiveProof = async () => {
+      setLiveProofLoading(true)
+      setLiveProofError(false)
+      setLiveProofTrace(null)
+      try {
+        const tracePath = '/api/agent/trace/TXN007'
+        if (import.meta.env.DEV) console.log('[Live Recovery] request URL:', api.getUri({ url: tracePath }))
+        const trace = await fetchJson(tracePath)
+        if (import.meta.env.DEV) {
+          console.log('[Live Recovery] execution:', trace.execution)
+          console.log('[Live Recovery] outcome:', trace.outcome)
+        }
+        if (!cancelled) setLiveProofTrace(trace)
+      } catch {
+        if (!cancelled) setLiveProofError(true)
+      } finally {
+        if (!cancelled) setLiveProofLoading(false)
+      }
+    }
+
+    loadLiveProof()
+    return () => {
+      cancelled = true
+    }
+  }, [openLiveProof])
 
   useEffect(() => {
     const handleKeyDown = (event) => {
@@ -520,32 +553,54 @@ function App() {
               </button>
             </div>
 
-            <div className="proof-grid">
-              <div className="proof-card">
-                <div className="proof-row"><span>Transaction ID</span><strong>{verifiedLiveRecoveryTransaction?.transaction_id || 'Not available'}</strong></div>
-                <div className="proof-row"><span>Original Amount</span><strong>₹{Number(verifiedLiveRecoveryTransaction?.amount || 0).toLocaleString('en-IN')}</strong></div>
-                <div className="proof-row"><span>Failure Reason</span><strong>{verifiedLiveRecoveryTransaction?.failure_reason || 'Not available'}</strong></div>
-                <div className="proof-row"><span>Agent Decision</span><strong>{verifiedLiveRecoveryTransaction?.recovery_action || 'Not available'}</strong></div>
-                <div className="proof-row"><span>Recovered Amount</span><strong>₹{Number(verifiedLiveRecoveryTransaction?.recovered_amount || 0).toLocaleString('en-IN')}</strong></div>
-                <div className="proof-row"><span>Recovered At</span><strong>{verifiedLiveRecoveryTransaction?.recovered_at ? new Date(verifiedLiveRecoveryTransaction.recovered_at).toLocaleString('en-IN') : 'Not available'}</strong></div>
-                <div className="proof-row"><span>Payment Link ID</span><strong>{verifiedLiveRecoveryTransaction?.payment_link_id || 'Not available'}</strong></div>
-                <div className="proof-row"><span>Reference ID</span><strong>{verifiedLiveRecoveryTransaction?.razorpay_reference_id || 'Not available'}</strong></div>
-              </div>
+            {liveProofLoading && <div className="proof-card">Loading verified recovery...</div>}
+            {liveProofError && <div className="proof-card">Unable to load verified recovery</div>}
+            {liveProofTrace && (() => {
+              const trace = liveProofTrace
+              const observation = trace.observation ?? {}
+              const decision = trace.decision ?? {}
+              const execution = trace.execution ?? {}
+              const outcome = trace.outcome ?? {}
+              const stageComplete = {
+                'Failed Payment': Boolean(observation.transaction_id),
+                'AI Decision': Boolean(decision.final_guarded_action),
+                'Payment Link': execution.payment_link_created === true,
+                'Customer Paid': outcome.recovered === true,
+                'Signed Webhook': outcome.signed_webhook === true,
+                'Revenue Recovered': outcome.recovered === true && outcome.status === 'recovered',
+              }
+              const formatAmount = (value) => value === null || value === undefined ? 'Not available' : `₹${Number(value).toLocaleString('en-IN')}`
+              const formatAction = (value) => value ? value.split('_').map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join(' ') : 'Not available'
 
-              <div className="proof-journey" aria-label="Recovery journey timeline">
-                {ORDERED_STAGES.map((stage, index) => {
-                  const done = index < ORDERED_STAGES.indexOf('Revenue Recovered') || (stage === 'Revenue Recovered' && auditLogs.some((item) => item?.action === 'revenue_recovered'))
-                  return (
-                    <div key={stage} className={`journey-step ${done ? 'done' : ''}`}>
-                      <span className="journey-icon">{done ? <Check size={14} /> : <ArrowUpRight size={14} />}</span>
-                      <span>{stage}</span>
-                    </div>
-                  )
-                })}
-              </div>
-            </div>
+              return (
+                <div className="proof-grid">
+                  <div className="proof-card">
+                    <div className="proof-row"><span>Transaction ID</span><strong>{observation.transaction_id || 'Not available'}</strong></div>
+                    <div className="proof-row"><span>Original Amount</span><strong>{formatAmount(observation.amount)}</strong></div>
+                    <div className="proof-row"><span>Failure Reason</span><strong>{observation.failure_reason || 'Not available'}</strong></div>
+                    <div className="proof-row"><span>Agent Decision</span><strong>{formatAction(decision.final_guarded_action)}</strong></div>
+                    <div className="proof-row"><span>Recovered Amount</span><strong>{formatAmount(outcome.recovered_amount)}</strong></div>
+                    <div className="proof-row"><span>Recovered At</span><strong>{outcome.recovered_at ? new Date(outcome.recovered_at).toLocaleString('en-IN') : 'Not available'}</strong></div>
+                    <div className="proof-row"><span>Payment Link ID</span><strong>{execution.payment_link_id || 'Not available'}</strong></div>
+                    <div className="proof-row"><span>Reference ID</span><strong>{execution.razorpay_reference_id || 'Not available'}</strong></div>
+                  </div>
 
-            {auditLogs.some((item) => item?.action === 'revenue_recovered') && (
+                  <div className="proof-journey" aria-label="Recovery journey timeline">
+                    {ORDERED_STAGES.map((stage) => {
+                      const done = stageComplete[stage]
+                      return (
+                        <div key={stage} className={`journey-step ${done ? 'done' : ''}`}>
+                          <span className="journey-icon">{done ? <Check size={14} /> : <ArrowUpRight size={14} />}</span>
+                          <span>{stage}</span>
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+              )
+            })()}
+
+            {liveProofTrace?.outcome?.signed_webhook === true && (
               <div className="verified-badge">
                 <ShieldCheck size={16} />
                 <span>Signed Webhook Verified</span>

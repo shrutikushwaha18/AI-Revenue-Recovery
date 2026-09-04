@@ -4,6 +4,9 @@ RecoverAI is an AI-powered revenue recovery system built for **Track 3: AI Reven
 
 It analyzes failed payments, recommends a recovery action using an LLM, validates that recommendation through deterministic financial guardrails, executes a bounded recovery step, and verifies the final outcome through signed Razorpay webhooks.
 
+      - **Frontend Demo:** [Open RecoverAI Live Demo]
+(https://ai-revenue-recovery-g75i95bbc-shrutikushwaha18s-projects.vercel.app/)
+
 > **Core idea:** The LLM recommends, the policy decides, execution acts, and the signed webhook verifies.
 
 ---
